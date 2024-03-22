@@ -110,9 +110,7 @@ class TestTransformPiecewiseModelToNestedInnerRepnGDP(unittest.TestCase):
         )
 
     def test_descend_into_expressions(self):
-        ct.check_descend_into_expressions(
-            self, 'contrib.piecewise.logarithmic_gdp'
-        )
+        ct.check_descend_into_expressions(self, 'contrib.piecewise.logarithmic_gdp')
 
     def test_descend_into_expressions_constraint_target(self):
         ct.check_descend_into_expressions_constraint_target(

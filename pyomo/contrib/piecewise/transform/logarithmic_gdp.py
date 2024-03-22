@@ -22,12 +22,12 @@ from pyomo.contrib.piecewise.transform.piecewise_linear_transformation_base impo
     Represent a piecewise using a nested linear GDP as in 
     contrib.piecewise.nested_inner_repn, but perform a variable identification 
     pass to reduce the number of Boolean variables from linearly to
-    logarithmically many."""
+    logarithmically many.""",
 )
 class LogarithmicGDPTransformation(Transformation):
     """
-    Represent a piecewise using a nested linear GDP as in 
-    contrib.piecewise.nested_inner_repn, but perform a variable identification 
+    Represent a piecewise using a nested linear GDP as in
+    contrib.piecewise.nested_inner_repn, but perform a variable identification
     pass to reduce the number of Boolean variables from linearly to
     logarithmically many. After this identification step and then a hull
     transformation, the formulation should match the disaggregated logarithmic
@@ -52,7 +52,7 @@ class LogarithmicGDPTransformation(Transformation):
         # issue: ephemerally set values are not passed all the way through to
         # _transform_pw_linear_expr, so I need to persistently set it and then
         # undo (because it's static)
-        #kwds['identify_variables'] = True
+        # kwds['identify_variables'] = True
         xf.apply_to(instance, **kwds)
         xf.CONFIG.identify_variables = False
         TransformationFactory('contrib.aggregate_vars').apply_to(instance)

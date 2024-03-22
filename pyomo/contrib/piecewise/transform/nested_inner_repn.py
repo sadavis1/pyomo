@@ -64,7 +64,7 @@ class NestedInnerRepresentationGDPTransformation(PiecewiseLinearTransformationBa
             left-sided Disjuncts. The intention behind this option is for a
             subsequent call to the contrib.aggregate_vars transformation to reduce
             the number of Boolean variables from linearly to logarithmically
-            many."""
+            many.""",
         ),
     )
     _transformation_name = "pw_linear_nested_inner_repn"
@@ -104,7 +104,13 @@ class NestedInnerRepresentationGDPTransformation(PiecewiseLinearTransformationBa
         else:
             # Add the disjunction
             transBlock.disj = self._get_disjunction(
-                choices, transBlock, pw_expr, pw_linear_func, transBlock, disjunct_levels, 1
+                choices,
+                transBlock,
+                pw_expr,
+                pw_linear_func,
+                transBlock,
+                disjunct_levels,
+                1,
             )
 
         # Set bounds as determined when setting up the disjunction
@@ -115,13 +121,21 @@ class NestedInnerRepresentationGDPTransformation(PiecewiseLinearTransformationBa
 
         # If we are identifying variables, do that now
         if identify_vars:
-            transBlock.var_identifications_l = Constraint(NonNegativeIntegers, NonNegativeIntegers)
-            transBlock.var_identifications_r = Constraint(NonNegativeIntegers, NonNegativeIntegers)
+            transBlock.var_identifications_l = Constraint(
+                NonNegativeIntegers, NonNegativeIntegers
+            )
+            transBlock.var_identifications_r = Constraint(
+                NonNegativeIntegers, NonNegativeIntegers
+            )
             for k in disjunct_levels.keys():
                 disj_0 = disjunct_levels[k][0]
                 for i, disj in enumerate(disjunct_levels[k][1:]):
-                    transBlock.var_identifications_l[k, i] = disj.d_l.binary_indicator_var == disj_0.d_l.binary_indicator_var
-                    transBlock.var_identifications_r[k, i] = disj.d_r.binary_indicator_var == disj_0.d_r.binary_indicator_var
+                    transBlock.var_identifications_l[k, i] = (
+                        disj.d_l.binary_indicator_var == disj_0.d_l.binary_indicator_var
+                    )
+                    transBlock.var_identifications_r[k, i] = (
+                        disj.d_r.binary_indicator_var == disj_0.d_r.binary_indicator_var
+                    )
 
         return substitute_var
 
@@ -129,7 +143,14 @@ class NestedInnerRepresentationGDPTransformation(PiecewiseLinearTransformationBa
     # the stack, since the whole point is that we'll only go logarithmically
     # many calls deep.
     def _get_disjunction(
-        self, choices, parent_block, pw_expr, pw_linear_func, root_block, disjunct_levels, level
+        self,
+        choices,
+        parent_block,
+        pw_expr,
+        pw_linear_func,
+        root_block,
+        disjunct_levels,
+        level,
     ):
         size = len(choices)
 
@@ -146,20 +167,32 @@ class NestedInnerRepresentationGDPTransformation(PiecewiseLinearTransformationBa
             @parent_block.Disjunct()
             def d_l(b):
                 b.inner_disjunction_l = self._get_disjunction(
-                    choices_l, b, pw_expr, pw_linear_func, root_block, disjunct_levels, level + 1
+                    choices_l,
+                    b,
+                    pw_expr,
+                    pw_linear_func,
+                    root_block,
+                    disjunct_levels,
+                    level + 1,
                 )
 
             @parent_block.Disjunct()
             def d_r(b):
                 b.inner_disjunction_r = self._get_disjunction(
-                    choices_r, b, pw_expr, pw_linear_func, root_block, disjunct_levels, level + 1
+                    choices_r,
+                    b,
+                    pw_expr,
+                    pw_linear_func,
+                    root_block,
+                    disjunct_levels,
+                    level + 1,
                 )
 
             if level not in disjunct_levels.keys():
                 disjunct_levels[level] = []
             disjunct_levels[level].append(parent_block.d_l)
             disjunct_levels[level].append(parent_block.d_r)
-            
+
             return Disjunction(expr=[parent_block.d_l, parent_block.d_r])
         elif size == 3:
             # Let's stay heavier on the right side for consistency. So the left
@@ -175,7 +208,13 @@ class NestedInnerRepresentationGDPTransformation(PiecewiseLinearTransformationBa
             @parent_block.Disjunct()
             def d_r(b):
                 b.inner_disjunction_r = self._get_disjunction(
-                    choices[1:], b, pw_expr, pw_linear_func, root_block, disjunct_levels, level + 1
+                    choices[1:],
+                    b,
+                    pw_expr,
+                    pw_linear_func,
+                    root_block,
+                    disjunct_levels,
+                    level + 1,
                 )
 
             if level not in disjunct_levels.keys():
