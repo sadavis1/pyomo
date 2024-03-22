@@ -49,5 +49,10 @@ class LogarithmicGDPTransformation(Transformation):
     def _apply_to(self, instance, **kwds):
         xf = TransformationFactory('contrib.piecewise.nested_inner_repn_gdp')
         xf.CONFIG.identify_variables = True
+        # issue: ephemerally set values are not passed all the way through to
+        # _transform_pw_linear_expr, so I need to persistently set it and then
+        # undo (because it's static)
+        #kwds['identify_variables'] = True
         xf.apply_to(instance, **kwds)
+        xf.CONFIG.identify_variables = False
         TransformationFactory('contrib.aggregate_vars').apply_to(instance)
