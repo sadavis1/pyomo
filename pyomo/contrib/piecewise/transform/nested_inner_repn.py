@@ -245,5 +245,5 @@ class NestedInnerRepresentationGDPTransformation(PiecewiseLinearTransformationBa
 
         # Mark the lambdas as local in order to prevent disagreggating multiple
         # times in the hull transformation
-        #b.LocalVars = Suffix(direction=Suffix.LOCAL)
-        #b.LocalVars[b] = [v for v in b.lambdas.values()]
+        b.LocalVars = Suffix(direction=Suffix.LOCAL)
+        b.LocalVars[b] = [v for v in b.lambdas.values()]
