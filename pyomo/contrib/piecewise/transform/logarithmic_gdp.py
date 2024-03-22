@@ -18,20 +18,36 @@ from pyomo.contrib.piecewise.transform.piecewise_linear_transformation_base impo
 
 @TransformationFactory.register(
     'contrib.piecewise.logarithmic_gdp',
-    doc='TODO'
+    doc="""
+    Represent a piecewise using a nested linear GDP as in 
+    contrib.piecewise.nested_inner_repn, but perform a variable identification 
+    pass to reduce the number of Boolean variables from linearly to
+    logarithmically many."""
 )
 class LogarithmicGDPTransformation(Transformation):
     """
+    Represent a piecewise using a nested linear GDP as in 
+    contrib.piecewise.nested_inner_repn, but perform a variable identification 
+    pass to reduce the number of Boolean variables from linearly to
+    logarithmically many. After this identification step and then a hull
+    transformation, the formulation should match the disaggregated logarithmic
+    formulation of [1].
+
+    References
+    ----------
+    [1] J.P. Vielma, S. Ahmed, and G. Nemhauser, "Mixed-integer models
+        for nonseparable piecewise-linear optimization: unifying framework
+        and extensions," Operations Research, vol. 58, no. 2, pp. 305-315,
+        2010.
     """
 
     CONFIG = PiecewiseLinearTransformationBase.CONFIG()
     _transformation_name = "pw_linear_logarithmic_gdp"
 
-    # Apply nested repn with variable identification, then disaggregate said
-    # variables
+    # Apply nested repn with variable identification, then disaggregate newly
+    # identified variables
     def _apply_to(self, instance, **kwds):
         xf = TransformationFactory('contrib.piecewise.nested_inner_repn_gdp')
         xf.CONFIG.identify_variables = True
         xf.apply_to(instance, **kwds)
-        #TransformationFactory('contrib.piecewise.nested_inner_repn_gdp').apply_to(instance, options={'identify_variables': True}, **kwds)
-        TransformationFactory('contrib.aggregate_vars').apply_to(instance, **kwds)
+        TransformationFactory('contrib.aggregate_vars').apply_to(instance)
