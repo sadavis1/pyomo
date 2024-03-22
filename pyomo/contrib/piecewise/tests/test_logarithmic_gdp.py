@@ -101,27 +101,27 @@ class TestTransformPiecewiseModelToNestedInnerRepnGDP(unittest.TestCase):
     # Test methods using the common_tests.py code. Copied in from test_inner_repn_gdp.py.
     def test_transformation_do_not_descend(self):
         ct.check_transformation_do_not_descend(
-            self, 'contrib.piecewise.nested_inner_repn_gdp'
+            self, 'contrib.piecewise.logarithmic_gdp'
         )
 
     def test_transformation_PiecewiseLinearFunction_targets(self):
         ct.check_transformation_PiecewiseLinearFunction_targets(
-            self, 'contrib.piecewise.nested_inner_repn_gdp'
+            self, 'contrib.piecewise.logarithmic_gdp'
         )
 
     def test_descend_into_expressions(self):
         ct.check_descend_into_expressions(
-            self, 'contrib.piecewise.nested_inner_repn_gdp'
+            self, 'contrib.piecewise.logarithmic_gdp'
         )
 
     def test_descend_into_expressions_constraint_target(self):
         ct.check_descend_into_expressions_constraint_target(
-            self, 'contrib.piecewise.nested_inner_repn_gdp'
+            self, 'contrib.piecewise.logarithmic_gdp'
         )
 
     def test_descend_into_expressions_objective_target(self):
         ct.check_descend_into_expressions_objective_target(
-            self, 'contrib.piecewise.nested_inner_repn_gdp'
+            self, 'contrib.piecewise.logarithmic_gdp'
         )
 
     # Check the solution of the log(x) model
@@ -129,8 +129,10 @@ class TestTransformPiecewiseModelToNestedInnerRepnGDP(unittest.TestCase):
     #@unittest.skipUnless(SolverFactory('gurobi').license_is_valid(), 'No license')
     def test_solve_log_model(self):
         m = models.make_log_x_model()
-        TransformationFactory("contrib.piecewise.nested_inner_repn_gdp").apply_to(m)
-        TransformationFactory('contrib.aggregate_vars').apply_to(m)
+        TransformationFactory("contrib.piecewise.logarithmic_gdp").apply_to(m)
+
+        #m.pprint()
+
         TransformationFactory("gdp.hull").apply_to(m)
         SolverFactory("gurobi").solve(m)
         ct.check_log_x_model_soln(self, m)
