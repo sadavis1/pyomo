@@ -134,12 +134,6 @@ class TestTransformPiecewiseModelToNestedInnerRepnGDP(unittest.TestCase):
         SolverFactory("gurobi").solve(m)
         ct.check_log_x_model_soln(self, m)
 
-    # TODO NOTE sketchy behavior: as of 1e164a18a, bigm works here only because
-    # of the contrib.aggregate_vars call at the end of contrib.logarithmic_gdp.
-    # If aggregate_vars is not called first, bigm will attempt to enforce multiple
-    # leaf disjuncts at once and make the model infeasible or wrong. This is
-    # probably due to a bug in bigm. Hull does not have this behavior.
-
     # Check the solution of the log(x) model using the bigm transformation
     @unittest.skipUnless(SolverFactory('gurobi').available(), 'Gurobi is not available')
     @unittest.skipUnless(SolverFactory('gurobi').license_is_valid(), 'No license')
