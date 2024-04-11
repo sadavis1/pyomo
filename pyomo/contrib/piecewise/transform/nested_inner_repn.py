@@ -130,6 +130,7 @@ class NestedInnerRepresentationGDPTransformation(PiecewiseLinearTransformationBa
             for k in disjunct_levels.keys():
                 disj_0 = disjunct_levels[k][0]
                 for i, disj in enumerate(disjunct_levels[k][1:]):
+                    print("Identifying two pairs of variables")
                     transBlock.var_identifications_l[k, i] = (
                         disj.d_l.binary_indicator_var == disj_0.d_l.binary_indicator_var
                     )

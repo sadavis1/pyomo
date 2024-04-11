@@ -55,4 +55,6 @@ class LogarithmicGDPTransformation(Transformation):
         # kwds['identify_variables'] = True
         xf.apply_to(instance, **kwds)
         xf.CONFIG.identify_variables = False
+        # issue: wrong order of operations here
+        TransformationFactory('gdp.hull').apply_to(instance)
         TransformationFactory('contrib.aggregate_vars').apply_to(instance)
