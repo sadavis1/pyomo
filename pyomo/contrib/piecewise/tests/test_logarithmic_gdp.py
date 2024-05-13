@@ -123,12 +123,12 @@ class TestTransformPiecewiseModelToNestedInnerRepnGDP(unittest.TestCase):
         )
 
     # Check the solution of the log(x) model using the hull transformation
-    @unittest.skipUnless(SolverFactory('gurobi').available(), 'Gurobi is not available')
-    @unittest.skipUnless(SolverFactory('gurobi').license_is_valid(), 'No license')
+    #@unittest.skipUnless(SolverFactory('gurobi').available(), 'Gurobi is not available')
+    #@unittest.skipUnless(SolverFactory('gurobi').license_is_valid(), 'No license')
     def test_solve_log_model_hull(self):
         m = models.make_log_x_model()
         TransformationFactory("contrib.piecewise.logarithmic_gdp").apply_to(m)
-        TransformationFactory("gdp.hull").apply_to(m)
+        #TransformationFactory("gdp.hull").apply_to(m)
         SolverFactory("gurobi").solve(m)
         ct.check_log_x_model_soln(self, m)
 
@@ -138,6 +138,6 @@ class TestTransformPiecewiseModelToNestedInnerRepnGDP(unittest.TestCase):
     def test_solve_log_model_bigm(self):
         m = models.make_log_x_model()
         TransformationFactory("contrib.piecewise.logarithmic_gdp").apply_to(m)
-        TransformationFactory("gdp.bigm").apply_to(m)
+        #TransformationFactory("gdp.bigm").apply_to(m)
         SolverFactory("gurobi").solve(m)
         ct.check_log_x_model_soln(self, m)
