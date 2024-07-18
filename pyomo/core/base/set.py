@@ -1179,12 +1179,12 @@ class SetData(ComponentData):
 
 class _SetData(metaclass=RenamedClass):
     __renamed__new_class__ = SetData
-    __renamed__version__ = '6.7.2.dev0'
+    __renamed__version__ = '6.7.2'
 
 
 class _SetDataBase(metaclass=RenamedClass):
     __renamed__new_class__ = SetData
-    __renamed__version__ = '6.7.2.dev0'
+    __renamed__version__ = '6.7.2'
 
 
 class _FiniteSetMixin(object):
@@ -1471,7 +1471,7 @@ class FiniteSetData(_FiniteSetMixin, SetData):
 
 class _FiniteSetData(metaclass=RenamedClass):
     __renamed__new_class__ = FiniteSetData
-    __renamed__version__ = '6.7.2.dev0'
+    __renamed__version__ = '6.7.2'
 
 
 class _ScalarOrderedSetMixin(object):
@@ -1736,7 +1736,7 @@ class OrderedSetData(_OrderedSetMixin, FiniteSetData):
 
 class _OrderedSetData(metaclass=RenamedClass):
     __renamed__new_class__ = OrderedSetData
-    __renamed__version__ = '6.7.2.dev0'
+    __renamed__version__ = '6.7.2'
 
 
 class InsertionOrderSetData(OrderedSetData):
@@ -1775,7 +1775,7 @@ class InsertionOrderSetData(OrderedSetData):
 
 class _InsertionOrderSetData(metaclass=RenamedClass):
     __renamed__new_class__ = InsertionOrderSetData
-    __renamed__version__ = '6.7.2.dev0'
+    __renamed__version__ = '6.7.2'
 
 
 class _SortedSetMixin(object):
@@ -1871,7 +1871,7 @@ class SortedSetData(_SortedSetMixin, OrderedSetData):
 
 class _SortedSetData(metaclass=RenamedClass):
     __renamed__new_class__ = SortedSetData
-    __renamed__version__ = '6.7.2.dev0'
+    __renamed__version__ = '6.7.2'
 
 
 ############################################################################
@@ -1932,7 +1932,8 @@ class Set(IndexedComponent):
 
     within : initialiser(set), optional
         A set that defines the valid values that can be contained
-        in this set
+        in this set. If the latter is indexed, the former can be indexed or
+        non-indexed, in which case it applies to all indices.
     domain : initializer(set), optional
         A set that defines the valid values that can be contained
         in this set
@@ -1986,7 +1987,7 @@ class Set(IndexedComponent):
     class SortedOrder(object):
         pass
 
-    _ValidOrderedAuguments = {True, False, InsertionOrder, SortedOrder}
+    _ValidOrderedArguments = {True, False, InsertionOrder, SortedOrder}
     _UnorderedInitializers = {set}
 
     @overload
@@ -2015,7 +2016,7 @@ class Set(IndexedComponent):
         ordered = kwds.get('ordered', Set.InsertionOrder)
         if ordered is True:
             ordered = Set.InsertionOrder
-        if ordered not in Set._ValidOrderedAuguments:
+        if ordered not in Set._ValidOrderedArguments:
             if inspect.isfunction(ordered):
                 ordered = Set.SortedOrder
             else:
@@ -2032,7 +2033,7 @@ class Set(IndexedComponent):
                             str(_)
                             for _ in sorted_robust(
                                 'Set.' + x.__name__ if isinstance(x, type) else x
-                                for x in Set._ValidOrderedAuguments.union(
+                                for x in Set._ValidOrderedArguments.union(
                                     {'<function>'}
                                 )
                             )
@@ -2218,7 +2219,7 @@ class Set(IndexedComponent):
 
         domain = self._init_domain(_block, index, self)
         if domain is not None:
-            domain.construct()
+            domain.parent_component().construct()
         if _d is UnknownSetDimen and domain is not None and domain.dimen is not None:
             _d = domain.dimen
 
@@ -2669,7 +2670,7 @@ class InfiniteRangeSetData(SetData):
 
 class _InfiniteRangeSetData(metaclass=RenamedClass):
     __renamed__new_class__ = InfiniteRangeSetData
-    __renamed__version__ = '6.7.2.dev0'
+    __renamed__version__ = '6.7.2'
 
 
 class FiniteRangeSetData(
@@ -2782,7 +2783,7 @@ class FiniteRangeSetData(
 
 class _FiniteRangeSetData(metaclass=RenamedClass):
     __renamed__new_class__ = FiniteRangeSetData
-    __renamed__version__ = '6.7.2.dev0'
+    __renamed__version__ = '6.7.2'
 
 
 @ModelComponentFactory.register(

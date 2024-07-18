@@ -176,11 +176,19 @@ class Highs(PersistentBase, PersistentSolver):
             return self.Availability.NotFound
 
     def version(self):
-        version = (
-            highspy.HIGHS_VERSION_MAJOR,
-            highspy.HIGHS_VERSION_MINOR,
-            highspy.HIGHS_VERSION_PATCH,
-        )
+        try:
+            version = (
+                highspy.HIGHS_VERSION_MAJOR,
+                highspy.HIGHS_VERSION_MINOR,
+                highspy.HIGHS_VERSION_PATCH,
+            )
+        except AttributeError:
+            # Older versions of Highs do not have the above attributes
+            # and the solver version can only be obtained by making
+            # an instance of the solver class.
+            tmp = highspy.Highs()
+            version = (tmp.versionMajor(), tmp.versionMinor(), tmp.versionPatch())
+
         return version
 
     @property
@@ -473,7 +481,7 @@ class Highs(PersistentBase, PersistentSolver):
             indices_to_remove.append(con_ndx)
             self._mutable_helpers.pop(con, None)
         self._solver_model.deleteRows(
-            len(indices_to_remove), np.array(indices_to_remove)
+            len(indices_to_remove), np.sort(np.array(indices_to_remove))
         )
         con_ndx = 0
         new_con_map = dict()
