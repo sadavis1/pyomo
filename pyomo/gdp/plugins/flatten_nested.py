@@ -22,8 +22,13 @@ from pyomo.core import (
     Var,
     Reference,
 )
-from pyomo.core.base import Transformation, TransformationFactory, LogicalConstraint
-from pyomo.core.expr import identify_variables, exactly, atleast
+from pyomo.core.base import (
+    Transformation,
+    TransformationFactory,
+    LogicalConstraint,
+    BooleanVar,
+)
+from pyomo.core.expr import identify_variables, exactly, atleast, implies
 from pyomo.core.util import target_list
 from pyomo.gdp import Disjunct, Disjunction, GDP_Error
 from pyomo.gdp.util import is_child_of, get_gdp_tree
@@ -115,14 +120,23 @@ class FlattenNested(Transformation):
                 # Disjuncts unreachable from Disjunctions, but reachable
                 # again from some References we will set up.
                 if node.ctype == Disjunction:
+                    parent_indicator = True
+                    if tree.parent_disjunct(node) is not None:
+                        parent_indicator = tree.parent_disjunct(node).indicator_var
                     if node.xor:
-                        logical_constraints[len(logical_constraints)] = exactly(
-                            1, *(disj.indicator_var for disj in node.disjuncts)
+                        logical_constraints[len(logical_constraints)] = implies(
+                            parent_indicator,
+                            exactly(
+                                1, *(disj.indicator_var for disj in node.disjuncts)
+                            ),
                         )
                     else:
                         had_or = True
-                        logical_constraints[len(logical_constraints)] = atleast(
-                            1, *(disj.indicator_var for disj in node.disjuncts)
+                        logical_constraints[len(logical_constraints)] = implies(
+                            parent_indicator,
+                            atleast(
+                                1, *(disj.indicator_var for disj in node.disjuncts)
+                            ),
                         )
                     node.deactivate()
                 elif node.ctype == Disjunct:
@@ -139,18 +153,39 @@ class FlattenNested(Transformation):
                         unique_component_name(node, 'parent_disjunct_refs'), refs_block
                     )
                     parent_disjunct = tree.parent_disjunct(node)
-                    while parent_disjunct is not None:
-                        print(f"{parent_disjunct.getname(fully_qualified=True)=}")
+                    # Quit once we make it past the disjunction we are transforming
+                    while (
+                        parent_disjunct is not None
+                        and disjunction not in tree.children(parent_disjunct)
+                    ):
+                        # print(f"{parent_disjunct.getname(fully_qualified=True)=}")
                         working_block = refs_block[
                             parent_disjunct.getname(fully_qualified=True)
                         ]
-                        for component in parent_disjunct.component_objects(
+                        for component in parent_disjunct.component_data_objects(
                             descend_into=False
                         ):
-                            if component.ctype in {Constraint, Var}:
+                            if component.ctype in {Var, BooleanVar}:
                                 working_block.add_component(
                                     component.name, Reference(component)
                                 )
+                            if component.ctype == Constraint:
+                                working_block.add_component(
+                                    component.name,
+                                    Constraint(
+                                        expr=(
+                                            component.lb,
+                                            component.body,
+                                            component.ub,
+                                        )
+                                    ),
+                                )
+                                component.deactivate()
+                            if component.ctype == LogicalConstraint:
+                                working_block.add_component(
+                                    component.name, LogicalConstraint(expr=component.body)
+                                )
+                                component.deactivate()
 
                         parent_disjunct = tree.parent_disjunct(parent_disjunct)
         # Set up the new Disjunction. It's almost possible to skip the
