@@ -28,7 +28,7 @@ from pyomo.core.base import (
     LogicalConstraint,
     BooleanVar,
 )
-from pyomo.core.expr import identify_variables, exactly, atleast, implies
+from pyomo.core.expr import identify_variables, exactly, atleast, implies, equivalent
 from pyomo.core.util import target_list
 from pyomo.gdp import Disjunct, Disjunction, GDP_Error
 from pyomo.gdp.util import is_child_of, get_gdp_tree
@@ -65,6 +65,8 @@ class FlattenNested(Transformation):
         self.logger = logger
 
     def _apply_to(self, instance, **kwds):
+        # TODO: you should be able to call this on a Disjunction
+        
         if instance.ctype not in (Block, Disjunct):
             raise GDP_Error(
                 "Transformation called on %s of type %s. 'instance'"
@@ -88,7 +90,7 @@ class FlattenNested(Transformation):
             transformation_blocks[t] = b
 
         whole_tree = get_gdp_tree(targets, instance)
-        # TODO: does this need to be sorted?
+
         for t in whole_tree.topological_sort():
             if t.ctype is Disjunction and whole_tree.in_degree(t) == 0:
                 target_block = t.parent_block()
@@ -107,18 +109,22 @@ class FlattenNested(Transformation):
         logical_constraints = transform_block.derived_logical_constraints = (
             LogicalConstraint(Any)
         )
+        transformed_disjuncts = transform_block.transformed_disjuncts = Disjunct(Any)
         had_or = False
+
+        to_deactivate = ComponentSet()
+
         for node in tree.topological_sort():
             if not tree.is_leaf(node):
                 # Non-leaf Disjuncts: Deactivate but otherwise do
-                # nothing. We will reference all the Constraints and
+                # nothing. We will copy the constraints and reference the
                 # Vars from these later, and the other components will
                 # be ignored.
                 #
                 # Non-leaf Disjunctions: Set up a logical constraint,
-                # then deactivate. Goal is that we make all the non-root
-                # Disjuncts unreachable from Disjunctions, but reachable
-                # again from some References we will set up.
+                # then deactivate. Never fix the indicator vars because
+                # we are replacing the disjunctive structure with logic
+                # on the indicator vars.
                 if node.ctype == Disjunction:
                     parent_indicator = True
                     if tree.parent_disjunct(node) is not None:
@@ -138,32 +144,44 @@ class FlattenNested(Transformation):
                                 1, *(disj.indicator_var for disj in node.disjuncts)
                             ),
                         )
-                    node.deactivate()
+                    to_deactivate.add(node)
                 elif node.ctype == Disjunct:
-                    node._deactivate_without_fixing_indicator()
+                    to_deactivate.add(node)
             else:
                 # Leaves: we had better be a Disjunct, not an empty
                 # Disjunction. Add refs to all Constraints and Vars from
                 # parent Disjuncts. The Vars are only necessary to
                 # satisfy writers that make too many assumptions.
                 if node.ctype == Disjunct:
-                    leaves.append(node)
-                    refs_block = Block(Any)
-                    node.add_component(
-                        unique_component_name(node, 'parent_disjunct_refs'), refs_block
+                    to_deactivate.add(node)
+
+                    leaf_proxy = transformed_disjuncts[
+                        node.getname(fully_qualified=True)
+                    ]
+                    leaves.append(leaf_proxy)
+
+                    # Here is a case where it would be nice to choose
+                    # the indicator var manually
+                    logical_constraints[len(logical_constraints)] = equivalent(
+                        node.indicator_var, leaf_proxy.indicator_var
                     )
-                    parent_disjunct = tree.parent_disjunct(node)
+
+                    refs_block = Block(Any)
+                    leaf_proxy.add_component(
+                        unique_component_name(node, 'disjunct_refs'), refs_block
+                    )
+                    visiting_disjunct = node
                     # Quit once we make it past the disjunction we are transforming
                     while (
-                        parent_disjunct is not None
-                        and disjunction not in tree.children(parent_disjunct)
+                        visiting_disjunct is not None
+                        and disjunction not in tree.children(visiting_disjunct)
                     ):
                         # print(f"{parent_disjunct.getname(fully_qualified=True)=}")
                         working_block = refs_block[
-                            parent_disjunct.getname(fully_qualified=True)
+                            visiting_disjunct.getname(fully_qualified=True)
                         ]
-                        for component in parent_disjunct.component_data_objects(
-                            descend_into=False
+                        for component in visiting_disjunct.component_data_objects(
+                            descend_into=Block, active=True
                         ):
                             if component.ctype in {Var, BooleanVar}:
                                 working_block.add_component(
@@ -171,23 +189,35 @@ class FlattenNested(Transformation):
                                 )
                             if component.ctype == Constraint:
                                 working_block.add_component(
-                                    component.name,
-                                    Constraint(
-                                        expr=(
-                                            component.lb,
-                                            component.body,
-                                            component.ub,
-                                        )
-                                    ),
+                                    component.name, Constraint(expr=component.expr)
                                 )
-                                component.deactivate()
+                                to_deactivate.add(component)
                             if component.ctype == LogicalConstraint:
                                 working_block.add_component(
-                                    component.name, LogicalConstraint(expr=component.body)
+                                    component.name,
+                                    LogicalConstraint(expr=component.expr),
+                                    # Using a Reference is not possible
+                                    # here. The logical-to-linear
+                                    # transformation will deactivate
+                                    # after transforming the first one,
+                                    # and transform no others as they
+                                    # are not active.
+                                    #
+                                    # component.name,
+                                    # Reference(component),
                                 )
-                                component.deactivate()
+                                to_deactivate.add(component)
+                            # if component.ctype == Block:
+                            # (descending into)
 
-                        parent_disjunct = tree.parent_disjunct(parent_disjunct)
+                        visiting_disjunct = tree.parent_disjunct(visiting_disjunct)
+
+        for component in to_deactivate:
+            if component.ctype == Disjunct:
+                component._deactivate_without_fixing_indicator()
+            else:
+                component.deactivate()
+
         # Set up the new Disjunction. It's almost possible to skip the
         # logical_constraints if had_or == False, but it might allow the
         # model to cheat at user-defined LogicalConstraints so we can't.
