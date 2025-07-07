@@ -25,6 +25,7 @@ def load():
         bound_pretransformation,
         binary_multiplication,
         flatten_nested,
+        apply_recursively,
     )
 
 
