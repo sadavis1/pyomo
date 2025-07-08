@@ -36,6 +36,7 @@ def configure_and_call_solver(model, solver, args, problem_type, timing, time_li
         raise RuntimeError("%s solver %s is not available." % (problem_type, solver))
     with SuppressInfeasibleWarning():
         solver_args = dict(args)
+        options = {}
         if time_limit is not None:
             elapsed = get_main_elapsed_time(timing)
             remaining = max(time_limit - elapsed, 1)
@@ -43,9 +44,9 @@ def configure_and_call_solver(model, solver, args, problem_type, timing, time_li
                 solver_args['add_options'] = solver_args.get('add_options', [])
                 solver_args['add_options'].append('option reslim=%s;' % remaining)
             else:
-                solver_args[time_limit_option[solver]] = remaining
+                options[time_limit_option[solver]] = remaining
         try:
-            results = opt.solve(model, **solver_args)
+            results = opt.solve(model, options=options, **solver_args)
         except ValueError as err:
             if 'Cannot load a SolverResults object with bad status: error' in str(err):
                 results = SolverResults()

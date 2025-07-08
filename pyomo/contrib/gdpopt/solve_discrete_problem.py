@@ -77,6 +77,7 @@ def solve_MILP_discrete_problem(util_block, solver, config):
 
     with SuppressInfeasibleWarning():
         mip_args = dict(config.mip_solver_args)
+        options = {}
         if config.time_limit is not None:
             elapsed = get_main_elapsed_time(timing)
             remaining = max(config.time_limit - elapsed, 1)
@@ -84,8 +85,8 @@ def solve_MILP_discrete_problem(util_block, solver, config):
                 mip_args['add_options'] = mip_args.get('add_options', [])
                 mip_args['add_options'].append('option reslim=%s;' % remaining)
             else:
-                mip_args[time_limit_option[solver]] = remaining
-        results = SolverFactory(config.mip_solver).solve(m, **mip_args)
+                options[time_limit_option[solver]] = remaining
+        results = SolverFactory(config.mip_solver).solve(m, options=options, **mip_args)
 
     config.call_after_discrete_problem_solve(solver, m, util_block)
     if config.call_after_master_solve is not _DoNothing:
