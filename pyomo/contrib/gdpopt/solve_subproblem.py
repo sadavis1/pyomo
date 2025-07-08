@@ -22,6 +22,7 @@ from pyomo.contrib.gdpopt.util import (
     SuppressInfeasibleWarning,
     is_feasible,
     get_main_elapsed_time,
+    time_limit_option,
 )
 from pyomo.core import Constraint, TransformationFactory, Objective, Block
 import pyomo.core.expr as EXPR
@@ -35,18 +36,17 @@ def configure_and_call_solver(model, solver, args, problem_type, timing, time_li
         raise RuntimeError("%s solver %s is not available." % (problem_type, solver))
     with SuppressInfeasibleWarning():
         solver_args = dict(args)
+        options = {}
         if time_limit is not None:
             elapsed = get_main_elapsed_time(timing)
             remaining = max(time_limit - elapsed, 1)
             if solver == 'gams':
                 solver_args['add_options'] = solver_args.get('add_options', [])
                 solver_args['add_options'].append('option reslim=%s;' % remaining)
-            elif solver == 'multisolve':
-                solver_args['time_limit'] = min(
-                    solver_args.get('time_limit', float('inf')), remaining
-                )
+            else:
+                options[time_limit_option[solver]] = remaining
         try:
-            results = opt.solve(model, **solver_args)
+            results = opt.solve(model, options=options, **solver_args)
         except ValueError as err:
             if 'Cannot load a SolverResults object with bad status: error' in str(err):
                 results = SolverResults()

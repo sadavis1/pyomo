@@ -18,6 +18,7 @@ from pyomo.contrib.gdpopt.util import (
     SuppressInfeasibleWarning,
     _DoNothing,
     get_main_elapsed_time,
+    time_limit_option,
 )
 from pyomo.core import Objective, Constraint
 from pyomo.opt import SolutionStatus, SolverFactory
@@ -76,17 +77,16 @@ def solve_MILP_discrete_problem(util_block, solver, config):
 
     with SuppressInfeasibleWarning():
         mip_args = dict(config.mip_solver_args)
+        options = {}
         if config.time_limit is not None:
             elapsed = get_main_elapsed_time(timing)
             remaining = max(config.time_limit - elapsed, 1)
             if config.mip_solver == 'gams':
                 mip_args['add_options'] = mip_args.get('add_options', [])
                 mip_args['add_options'].append('option reslim=%s;' % remaining)
-            elif config.mip_solver == 'multisolve':
-                mip_args['time_limit'] = min(
-                    mip_args.get('time_limit', float('inf')), remaining
-                )
-        results = SolverFactory(config.mip_solver).solve(m, **mip_args)
+            else:
+                options[time_limit_option[solver]] = remaining
+        results = SolverFactory(config.mip_solver).solve(m, options=options, **mip_args)
 
     config.call_after_discrete_problem_solve(solver, m, util_block)
     if config.call_after_master_solve is not _DoNothing:
