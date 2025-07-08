@@ -37,6 +37,31 @@ from pyomo.gdp.util import _parent_disjunct
 from pyomo.opt import SolverFactory
 
 
+time_limit_option = {
+    'gurobi': "TimeLimit",
+    'appsi_gurobi': 'TimeLimit',
+    'gurobi_direct': 'TimeLimit',
+    'gurobi_direct_v2': 'TimeLimit',
+    'cplex': 'timelimit',
+    'appsi_cplex': 'timelimit',
+    'ipopt': 'max_wall_time',
+    'ipopt_v2': 'max_wall_time',
+    'baron': 'MaxTime',
+    'cyipopt': 'max_cpu_time',
+    'appsi_highs': 'time_limit',
+    'highs': 'time_limit',
+    'glpk': 'tmlim',
+    'appsi_ipopt': 'max_wall_time',
+    # gams is weird so we just deal with it separately.
+    'scip': 'limits/time',
+    'maingo': 'maxwTime',
+    'cbc': 'timelimit',  # maybe timelim or lim:time?
+    'bonmin': 'time_limit',
+    'couenne': 'time_limit',
+    'xpress_direct': 'TIMELIMIT',
+}
+
+
 class _DoNothing(object):
     """Do nothing, literally.
 
