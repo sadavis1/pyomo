@@ -61,7 +61,8 @@ from pyomo.core.expr.numeric_expr import (
 from pyomo.core.expr.visitor import StreamBasedExpressionVisitor, _EvaluationVisitor
 from pyomo.core.staleflag import StaleFlagManager
 
-from pyomo.opt import SolverFactory, WriterFactory
+from pyomo.opt import WriterFactory
+from pyomo.contrib.solver.common.factory import SolverFactory
 from pyomo.repn.quadratic import QuadraticRepnVisitor
 from pyomo.repn.util import (
     apply_node_operation,
