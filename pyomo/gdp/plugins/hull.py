@@ -18,6 +18,7 @@ import pyomo.common.config as cfg
 from pyomo.common import deprecated
 from pyomo.common.collections import ComponentMap, ComponentSet, DefaultComponentMap
 from pyomo.common.modeling import unique_component_name
+from pyomo.common.errors import DeveloperError
 from pyomo.core.expr.numvalue import ZeroConstant
 import pyomo.core.expr as EXPR
 from pyomo.core.base import TransformationFactory
@@ -40,6 +41,9 @@ from pyomo.core import (
     value,
     NonNegativeIntegers,
     Binary,
+    ConcreteModel,
+    Objective,
+    Reference,
 )
 from pyomo.gdp import Disjunct, Disjunction, GDP_Error
 from pyomo.gdp.disjunct import DisjunctData
@@ -51,8 +55,14 @@ from pyomo.gdp.util import (
     _warn_for_active_disjunct,
 )
 from pyomo.core.util import target_list
+from pyomo.core.expr.visitor import IdentifyVariableVisitor
 from pyomo.util.vars_from_expressions import get_vars_from_components
+from pyomo.opt.base.solvers import SolverFactory
+from pyomo.opt.results.solver import TerminationCondition
+from pyomo.opt.solver import SolverStatus
 from weakref import ref as weakref_ref
+import math
+import itertools
 
 logger = logging.getLogger('pyomo.gdp.hull')
 
@@ -131,7 +141,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             domain=cfg.In(['FurmanSawayaGrossmann', 'LeeGrossmann', 'GrossmannLee']),
             description='perspective function used for variable disaggregation',
             doc="""
-        The perspective function used for variable disaggregation
+        The perspective function used to transform nonlinear functions
 
         "LeeGrossmann" is the original NL convex hull from Lee &
         Grossmann (2000) [1]_, which substitutes nonlinear constraints
@@ -157,6 +167,20 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             ((1-eps)*y_ik + eps) * h_ik( nu_ik/((1-eps)*y_ik + eps) ) \
                 - eps * h_ki(0) * ( 1-y_ik ) <= 0
 
+
+         The default, "FurmanSawayaGrossmann", is strongly
+         recommended. When "FurmanSawayaGrossmann" is used, any value of
+         epsilon in (0, 1) leads to an exact reformulation, and
+         decreasing epsilon improves the quality of the continuous
+         relaxation (see [3]_). When "GrossmannLee" is used, epsilon
+         should be set very small, as the formulation is only correct in
+         the epsilon -> 0 limit. In particular, it should be small
+         enough to put spurious O(eps) sized constraint violations
+         within solver tolerances. Both "GrossmannLee" (when epsilon is
+         small enough) and the original "LeeGrossmann" have serious
+         numerical issues.
+
+
         References
         ----------
         .. [1] Lee, S., & Grossmann, I. E. (2000). New algorithms for
@@ -180,6 +204,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             default=1e-4,
             domain=cfg.PositiveFloat,
             description="Epsilon value to use in perspective function",
+            doc="See the doc for 'perspective function' for discussion.",
         ),
     )
     CONFIG.declare(
@@ -196,6 +221,32 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         the transformed model is no longer valid. By default, the transformation
         will disagregate fixed variables so that any later fixing and unfixing
         will be valid in the transformed model.
+        """,
+        ),
+    )
+    CONFIG.declare(
+        'well_defined_points',
+        cfg.ConfigValue(
+            default=ComponentMap(),
+            domain=ComponentMap,
+            description="Distinguished points at which constraints with restricted "
+            "domain are well-defined. This will be used as a center point for "
+            "transformed constraints.",
+            doc="""
+        Dict-like mapping Disjunctions to ComponentMaps
+        mapping Vars appearing on the Disjuncts of that Disjunction to
+        float values, such that each constraint function appearing on
+        those disjuncts is well-defined (no division by zero, logarithm
+        of negative, etc.) when those vars are set to those values. The
+        outer map need not contain every Disjunction in the model as a
+        key, but the inner ComponentMaps (if any) should have as keys
+        every variable appearing on those disjuncts (including fixed
+        vars unless assume_fixed_vars_permanent is set to True). When
+        this is not provided for a disjunction, as it usually need not
+        be, we first try the point with all variables zero, then we
+        make a best effort to find a nonzero point through a subsolver
+        call, then finally we raise GDP_Error if neither attempt was
+        successful.
         """,
         ),
     )
@@ -294,6 +345,111 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
 
         return transBlock, True
 
+    # From a test expression test_expr containing exactly the variables
+    # regular_vars and fallback_vars, get a point at which test_expr is
+    # well-defined according to the following process:
+    # (1) try the origin
+    # (2) try fixing fallback_vars at zero, and allow a solver to
+    #     change regular_vars
+    # (3) try allowing a solver to change all the vars
+    #
+    # If a point is found, return a ComponentMap x0_map from Var to the
+    # found numeric value, and a ComponentSet used_vars of all Vars that
+    # were given a nonzero value as part of that process. If no such
+    # point can be found, raise a GDP_Error.
+    #
+    # For the purposes of this function, fixed vars are treated as
+    # legitimate variables and may be changed to find the
+    # point. However, this function will restore the original variable
+    # values and fixed statuses when it returns successfully.
+    #
+    # TODO: treat vars like params if they're fixed and we have
+    # assume_fixed_vars_permanent set? Or not?
+    def _get_well_defined_point(self, test_expr, regular_vars, fallback_vars):
+        # First, see if test_expr is well-defined at the origin.
+        x0_map = ComponentMap()
+        orig_values = ComponentMap()
+        orig_fixed = ComponentMap()
+        for x in itertools.chain(regular_vars, fallback_vars):
+            x0_map[x] = 0  # ZeroConstant?
+            # also do some setup here
+            orig_values[x] = value(x, exception=False)
+            orig_fixed[x] = x.fixed
+        try:
+            # TODO: value() is only needed here because there can be
+            # fixed variables with values that did not appear in
+            # regular_vars or fallback_vars, so they do not appear in
+            # x0_map. This is probably an error. See test
+            # test_do_not_disaggregate_fixed_variables
+            #
+            # TODO actually, maybe that solves my problem for me? If I
+            # don't get the fixed variables when we have
+            # assume_fixed_vars_permanent=True, then I'll never put them
+            # in x0_map and therefore never need to offset
+            # them... Investigate this.
+            val = value(
+                EXPR.ExpressionReplacementVisitor(substitute=x0_map).walk_expression(
+                    test_expr
+                )
+            )
+            if math.isfinite(val):
+                return x0_map, ComponentSet()
+        except Exception as e:  # what types can we throw here?
+            breakpoint()
+            pass
+        # Second, try making it well-defined by editing only the regular vars
+        for x in fallback_vars:
+            x.fix(0)
+        for x in regular_vars:
+            x.unfix()
+        test_model = ConcreteModel()
+        test_model.obj = Objective(expr=test_expr)
+        # In case the solver can't deal with Vars it doesn't know about
+        for x in itertools.chain(regular_vars, fallback_vars):
+            test_model.add_component(
+                unique_component_name(test_model, x.name), Reference(x)
+            )
+        feasible = self._solve_for_first_feasible_solution(test_model)
+        # Third, try again, but edit all the vars
+        if not feasible:
+            for x in fallback_vars:
+                x.unfix()
+            feasible = self._solve_for_first_feasible_solution(test_model)
+            if not feasible:
+                raise GDP_Error(
+                    # TODO finish error message
+                    "Unable to find a well-defined point on disjunction {disjunction}. "
+                    "To carry out the hull transformation, each disjunction must have a "
+                    "point at which every constraint function appearing in its "
+                    "disjuncts is well-defined and finite. Please ensure such a point "
+                    "actually exists, then if we still cannot find it, override our "
+                    "search process using the {TODO_PARAM_NAME} option."
+                )
+        # We have a point.
+        if not math.isfinite(value(test_expr)):
+            raise DeveloperError("Theoretically unreachable")
+        x0_map = ComponentMap()
+        used_vars = ComponentSet()
+        for x in itertools.chain(regular_vars, fallback_vars):
+            x0_map[x] = value(x)
+            if x0_map[x] != 0:
+                used_vars.add(x)
+            x.set_value(orig_values[x])
+            x.fixed = orig_fixed[x]
+        return x0_map, used_vars
+
+    # This one is going to get a little janky...
+    # Let's start with just baron for the time being.
+    def _solve_for_first_feasible_solution(self, test_model):
+        results = SolverFactory("baron").solve(
+            test_model, options={'NumSol': 1, 'FirstFeas': 1}
+        )
+        if results.solver.termination_condition is TerminationCondition.infeasible:
+            return False
+        if results.solver.status is not SolverStatus.ok:
+            raise GDP_Error(f"Unexpected solver status {results.solver.status}.")
+        return True
+
     def _transform_disjunctionData(
         self, obj, index, parent_disjunct, local_vars_by_disjunct
     ):
@@ -331,20 +487,28 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         # which diaggregated variables we need.
         var_order = ComponentSet()
         disjuncts_var_appears_in = ComponentMap()
+        active_constraints = set()
         # For each disjunct in the disjunction, we will store a list of Vars
         # that need a disaggregated counterpart in that disjunct.
         disjunct_disaggregated_var_map = {}
         for disjunct in active_disjuncts:
             # create the key for each disjunct now
             disjunct_disaggregated_var_map[disjunct] = ComponentMap()
-            for var in get_vars_from_components(
-                disjunct,
+            # for var in get_vars_from_components(
+            #     disjunct,
+            #     Constraint,
+            #     include_fixed=not self._config.assume_fixed_vars_permanent,
+            #     active=True,
+            #     sort=SortComponents.deterministic,
+            #     descend_into=Block,
+            # ):
+            for con in disjunct.component_data_objects(
                 Constraint,
-                include_fixed=not self._config.assume_fixed_vars_permanent,
                 active=True,
                 sort=SortComponents.deterministic,
                 descend_into=Block,
             ):
+                active_constraints.add(con)
                 # [ESJ 02/14/2020] By default, we disaggregate fixed variables
                 # on the philosophy that fixing is not a promise for the future
                 # and we are mathematically wrong if we don't transform these
@@ -356,11 +520,18 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 # Note that, because ComponentSets are ordered, we will
                 # eventually disaggregate the vars in a deterministic order
                 # (the order that we found them)
-                if var not in var_order:
-                    var_order.add(var)
-                    disjuncts_var_appears_in[var] = ComponentSet([disjunct])
-                else:
-                    disjuncts_var_appears_in[var].add(disjunct)
+                seen_vars = set()
+                for var in IdentifyVariableVisitor(
+                    include_fixed=not self._config.assume_fixed_vars_permanent
+                ).walk_expression(con.expr):
+                    if id(var) in seen_vars:
+                        continue
+                    seen_vars.add(id(var))
+                    if var not in var_order:
+                        var_order.add(var)
+                        disjuncts_var_appears_in[var] = ComponentSet([disjunct])
+                    else:
+                        disjuncts_var_appears_in[var].add(disjunct)
 
         # Now, we will disaggregate all variables that are not explicitly
         # declared as being local. If we are moving up in a nested tree, we have
@@ -373,28 +544,75 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         # do this, we will explicitly collect the set of local_vars in this
         # loop.
         local_vars = defaultdict(ComponentSet)
+        all_local_vars = ComponentSet()
+        # This set contains vars that potentially must be disaggregated,
+        # but do not need to worry about global constraints, and can
+        # safely be added to the local vars of any parent disjunct. This
+        # is a superset of all_local_vars, and the extra elements are
+        # members of all_vars_to_disaggregate.
+        generalized_local_vars = ComponentSet()
         for var in var_order:
             disjuncts = disjuncts_var_appears_in[var]
-            # clearly not local if used in more than one disjunct
-            if len(disjuncts) > 1:
-                if self._generate_debug_messages:
-                    logger.debug(
-                        "Assuming '%s' is not a local var since it is"
-                        "used in multiple disjuncts." % var.name
-                    )
-                for disj in disjuncts:
-                    vars_to_disaggregate[disj].add(var)
-                    all_vars_to_disaggregate.add(var)
-            else:  # var only appears in one disjunct
-                disjunct = next(iter(disjuncts))
-                # We check if the user declared it as local
-                if disjunct in local_vars_by_disjunct:
-                    if var in local_vars_by_disjunct[disjunct]:
+            # # clearly not local if used in more than one disjunct
+            # if len(disjuncts) > 1:
+            #     if self._generate_debug_messages:
+            #         logger.debug(
+            #             "Assuming '%s' is not a local var since it is"
+            #             "used in multiple disjuncts." % var.name
+            #         )
+            #     for disj in disjuncts:
+            #         vars_to_disaggregate[disj].add(var)
+            #         all_vars_to_disaggregate.add(var)
+            # else:  # var only appears in one disjunct
+            #     disjunct = next(iter(disjuncts))
+            #     # We check if the user declared it as local
+            #     if disjunct in local_vars_by_disjunct:
+            #         if var in local_vars_by_disjunct[disjunct]:
+            #             local_vars[disjunct].add(var)
+            #             all_local_vars.add(var)
+            #             continue
+            #     # It's not declared local to this Disjunct, so we
+            #     # disaggregate
+            #     vars_to_disaggregate[disjunct].add(var)
+            #     all_vars_to_disaggregate.add(var)
+            for disj in disjuncts:
+                if disj in local_vars_by_disjunct[disjunct]:
+                    if len(disjuncts) == 1:
+                        # was this a noop before?
                         local_vars[disjunct].add(var)
-                        continue
-                # It's not declared local to this Disjunct, so we
-                # disaggregate
-                vars_to_disaggregate[disjunct].add(var)
+                        all_local_vars.add(var)
+                    else:
+                        vars_to_disaggregate[disjunct].add(var)
+                        all_vars_to_disaggregate.add(var)
+                    generalized_local_vars.add(var)
+                else:
+                    # Not a local var, so we must disaggregate, even if
+                    # it's only on one disjunct.
+                    vars_to_disaggregate[disjunct].add(var)
+                    all_vars_to_disaggregate.add(var)
+
+        # Find a well-defined point x_0. We need every constraint body
+        # to successfully evaluate to something.
+        if obj in self._config.well_defined_points:
+            x0_map = self._config.well_defined_points[obj]
+            offset_vars = ComponentSet()
+            for x, val in x0_map.items():
+                if val != 0:
+                    offset_vars.add(x)
+        else:
+            x0_map, offset_vars = self._get_well_defined_point(
+                test_expr=sum(con.body for con in active_constraints),
+                regular_vars=all_vars_to_disaggregate,
+                fallback_vars=all_local_vars,
+            )
+        # Any var that got an offset cannot be local anymore, but it can
+        # still be generalized local
+        for var in offset_vars:
+            if var in all_local_vars:
+                var_disjunct = next(iter(disjuncts_var_appears_in[var]))
+                local_vars[var_disjunct].remove(var)
+                all_local_vars.remove(var)
+                vars_to_disaggregate[var_disjunct].add(var)
                 all_vars_to_disaggregate.add(var)
 
         # Now that we know who we need to disaggregate, we will do it
@@ -415,6 +633,8 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                     parent_local_var_suffix=parent_local_var_list,
                     parent_disjunct_local_vars=local_vars_by_disjunct[parent_disjunct],
                     disjunct_disaggregated_var_map=disjunct_disaggregated_var_map,
+                    x0_map=x0_map,
+                    offset_vars=offset_vars,
                 )
         xorConstraint.add(index, (or_expr, 1))
         # map the DisjunctionData to its XOR constraint to mark it as
@@ -429,7 +649,25 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             # been created, and we can just proceed and make this constraint. If
             # it didn't, we need one more disaggregated variable, correctly
             # defined. And then we can make the constraint.
-            if len(disjuncts_var_appears_in[var]) < len(active_disjuncts):
+            # TODO new comment:
+            # If a var did not appear in every disjunct of the
+            # disjunction, then we (intentionally) did not create a
+            # complete set of disaggregated vars and corresponding
+            # bounds constraints for it. This would cause the variable
+            # to be forced to zero when no disjunct containing it is
+            # selected. If the var were local, this would not matter,
+            # but unless we were able to put it in
+            # generalized_local_vars earlier, it is possible that it
+            # could appear in other parts of the model. It is therefore
+            # necessary that it be unconstrained when no disjunct
+            # containing it is selected. We implement this by adding one
+            # more disaggregated variable which becomes active if none
+            # of the disjuncts containing the original var were
+            # selected. Its only constraints are the bounds constraints.
+            if (
+                len(disjuncts_var_appears_in[var]) < len(active_disjuncts)
+                and var not in generalized_local_vars
+            ):
                 # create one more disaggregated var
                 idx = len(disaggregatedVars)
                 disaggregated_var = disaggregatedVars[idx]
@@ -448,6 +686,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                     disjunct=obj,
                     bigmConstraint=disaggregated_var_bounds,
                     var_free_indicator=var_free,
+                    x0_map=x0_map,
                     var_idx=idx,
                 )
                 original_var_info = var.parent_block().private_data()
@@ -471,6 +710,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             else:
                 disaggregatedExpr = 0
             for disjunct in disjuncts_var_appears_in[var]:
+                breakpoint()
                 disaggregatedExpr += disjunct_disaggregated_var_map[disjunct][var]
 
             cons_idx = len(disaggregationConstraint)
@@ -478,7 +718,9 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             # constraint will be transformed again. (And if it turns out
             # everything in it is local, then that transformation won't actually
             # change the mathematical expression, so it's okay.
-            disaggregationConstraint.add(cons_idx, var == disaggregatedExpr)
+            disaggregationConstraint.add(
+                cons_idx, var - x0_map[var] == disaggregatedExpr
+            )
             # and update the map so that we can find this later. We index by
             # variable and the particular disjunction because there is a
             # different one for each disjunction
@@ -496,6 +738,8 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         parent_local_var_suffix,
         parent_disjunct_local_vars,
         disjunct_disaggregated_var_map,
+        x0_map,
+        offset_vars,
     ):
         relaxationBlock = self._get_disjunct_transformation_block(obj, transBlock)
 
@@ -537,6 +781,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 disjunct=obj,
                 bigmConstraint=bigmConstraint,
                 var_free_indicator=obj.indicator_var.get_associated_binary(),
+                x0_map=x0_map,
             )
             # update the bigm constraint mappings
             data_dict = disaggregatedVar.parent_block().private_data()
@@ -556,7 +801,8 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             bigmConstraint = Constraint(transBlock.lbub)
             relaxationBlock.add_component(conName, bigmConstraint)
 
-            parent_block = var.parent_block()
+            # TODO unused code?
+            # parent_block = var.parent_block()
 
             self._declare_disaggregated_var_bounds(
                 original_var=var,
@@ -564,6 +810,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 disjunct=obj,
                 bigmConstraint=bigmConstraint,
                 var_free_indicator=obj.indicator_var.get_associated_binary(),
+                x0_map=x0_map,  # trivial in this case
             )
             # update the bigm constraint mappings
             data_dict = var.parent_block().private_data()
@@ -573,18 +820,22 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         var_substitute_map = dict(
             (id(v), newV) for v, newV in disjunct_disaggregated_var_map[obj].items()
         )
-        zero_substitute_map = dict(
-            (id(v), ZeroConstant)
+        x0_substitute_map = dict(
+            (id(v), x0_map[v])
             for v, newV in disjunct_disaggregated_var_map[obj].items()
         )
 
-        # Transform each component within this disjunct
+        # Transform each component within this disjunct. In particular,
+        # call _transform_constraint on each constraint.
         self._transform_block_components(
-            obj, obj, var_substitute_map, zero_substitute_map
+            obj, obj, var_substitute_map, x0_substitute_map
         )
 
         # Anything that was local to this Disjunct is also local to the parent,
         # and just got "promoted" up there, so to speak.
+        #
+        # TODO: this needs to add generalized local vars too. Why is
+        # this in transform_disjunct, can't I just do this centrally???
         parent_disjunct_local_vars.update(local_vars)
         # deactivate disjunct so writers can be happy
         obj._deactivate_without_fixing_indicator()
@@ -596,6 +847,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         disjunct,
         bigmConstraint,
         var_free_indicator,
+        x0_map,
         var_idx=None,
     ):
         # For updating mappings:
@@ -605,8 +857,8 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
 
         disaggregated_var_info.bigm_constraint_map[disaggregatedVar][disjunct] = {}
 
-        lb = original_var.lb
-        ub = original_var.ub
+        lb = original_var.lb - x0_map[original_var]
+        ub = original_var.ub - x0_map[original_var]
         if lb is None or ub is None:
             raise GDP_Error(
                 "Variables that appear in disjuncts must be "
@@ -658,7 +910,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         return local_var_list
 
     def _transform_constraint(
-        self, obj, disjunct, var_substitute_map, zero_substitute_map
+        self, obj, disjunct, var_substitute_map, x0_substitute_map
     ):
         # we will put a new transformed constraint on the relaxation block.
         relaxationBlock = disjunct._transformation_block()
@@ -678,6 +930,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             unique = len(newConstraint)
             name = c.local_name + "_%s" % unique
 
+            # TODO: should this be a walker call?
             NL = c.body.polynomial_degree() not in (0, 1)
             EPS = self._config.EPS
             mode = self._config.perspective_function
@@ -686,8 +939,12 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             # we substitute the expression variables with the
             # disaggregated variables
             if not NL or mode == "FurmanSawayaGrossmann":
-                h_0 = clone_without_expression_components(
-                    c.body, substitute=zero_substitute_map
+                h_x0 = clone_without_expression_components(
+                    # TODO: is this properly handling fixed vars when we
+                    # consider them permanent? Do we need a value()
+                    # call?
+                    c.body,
+                    substitute=x0_substitute_map,
                 )
 
             y = disjunct.binary_indicator_var
@@ -696,7 +953,8 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                     sub_expr = clone_without_expression_components(
                         c.body,
                         substitute=dict(
-                            (var, subs / y) for var, subs in var_substitute_map.items()
+                            (var, (subs / y) + x0_substitute_map[var])
+                            for var, subs in var_substitute_map.items()
                         ),
                     )
                     expr = sub_expr * y
@@ -704,7 +962,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                     sub_expr = clone_without_expression_components(
                         c.body,
                         substitute=dict(
-                            (var, subs / (y + EPS))
+                            (var, (subs / (y + EPS)) + x0_substitute_map[var])
                             for var, subs in var_substitute_map.items()
                         ),
                     )
@@ -713,42 +971,88 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                     sub_expr = clone_without_expression_components(
                         c.body,
                         substitute=dict(
-                            (var, subs / ((1 - EPS) * y + EPS))
+                            (
+                                var,
+                                (subs / ((1 - EPS) * y + EPS)) + x0_substitute_map[var],
+                            )
                             for var, subs in var_substitute_map.items()
                         ),
                     )
-                    expr = ((1 - EPS) * y + EPS) * sub_expr - EPS * h_0 * (1 - y)
+                    expr = ((1 - EPS) * y + EPS) * sub_expr - EPS * h_x0 * (1 - y)
                 else:
                     raise RuntimeError("Unknown NL Hull mode")
             else:
                 expr = clone_without_expression_components(
-                    c.body, substitute=var_substitute_map
+                    c.body,
+                    substitute=dict(
+                        # It is possible to do this substituting v
+                        # instead of v + x_0 here, but I think it would
+                        # require picking apart the affine function into
+                        # linear part and offset later... really that's
+                        # just evaluating it at zero, which should be no
+                        # problem... TODO consider this further.
+                        (var, subs + x0_substitute_map[var])
+                        for var, subs in var_substitute_map.items()
+                    ),
                 )
 
             if c.equality:
                 if NL:
-                    # ESJ TODO: This can't happen right? This is the only
-                    # obvious case where someone has messed up, but this has to
-                    # be nonconvex, right? Shouldn't we tell them?
+                    # NOTE: This nonlinear equality constraint is
+                    # probably nonconvex, depending on your definition
+                    # of nonconvex (it is never in the standard form for
+                    # a convex problem unless the constraint body is a
+                    # disguised affine function that we didn't catch,
+                    # but the feasible region may still be convex under
+                    # weaker conditions, e.g. quasilinearity). But even
+                    # so, this reformulation is still correct (though
+                    # some of its purpose evaporates), so we will not
+                    # complain to the user.
                     newConsExpr = expr == c.lower * y
                 else:
                     v = list(EXPR.identify_variables(expr))
-                    if len(v) == 1 and not c.lower:
-                        # Setting a variable to 0 in a disjunct is
-                        # *very* common.  We should recognize that in
-                        # that structure, the disaggregated variable
-                        # will also be fixed to 0.
-                        v[0].fix(0)
-                        # ESJ: If you ask where the transformed constraint is,
-                        # the answer is nowhere. Really, it is in the bounds of
-                        # this variable, so I'm going to return
-                        # it. Alternatively we could return an empty list, but I
-                        # think I like this better.
-                        constraint_map.transformed_constraints[c].append(v[0])
-                        # Reverse map also (this is strange)
-                        constraint_map.src_constraint[v[0]] = c
-                        continue
-                    newConsExpr = expr - (1 - y) * h_0 == c.lower * y
+                    if len(v) == 1:
+                        # TODO FIXME FIXME FIXME: this condition is
+                        # wrong; it triggers in a case like 2x=x0, but
+                        # that is not correct for x0 nonzero.
+                        #
+                        # TODO ask Emma about constraint
+                        # canonicalization. The old version of this
+                        # condition was clearly operating under the
+                        # assumption that c.body has no affine part (and
+                        # so is this edited version), but other parts of
+                        # the code (eg setting up newConsExpr) appear
+                        # not to be making that assumption, otherwise
+                        # they would be simpler.
+                        #
+                        # TODO: also this is wrong for another reason:
+                        # we already substituted so the id is not the
+                        # same as before. I should be identifying
+                        # variables on c.body or something.
+                        #
+                        # if c.lower == x0_substitute_map[id(v[0])]:
+                        if False:
+                            # Setting a variable to 0 in a disjunct is
+                            # *very* common. We should recognize that in
+                            # that structure, the disaggregated variable
+                            # will also be fixed to 0. In the
+                            # general-offset case, this happens when the
+                            # equality constraint is of the form x =
+                            # x_0. We're unlikely to hit this unless x_0
+                            # is the origin or was passed manually, but
+                            # that's fine - nonzero x_0 is already a
+                            # rare special case.
+                            v[0].fix(0)
+                            # ESJ: If you ask where the transformed constraint is,
+                            # the answer is nowhere. Really, it is in the bounds of
+                            # this variable, so I'm going to return
+                            # it. Alternatively we could return an empty list, but I
+                            # think I like this better.
+                            constraint_map.transformed_constraints[c].append(v[0])
+                            # Reverse map also (this is strange)
+                            constraint_map.src_constraint[v[0]] = c
+                            continue
+                    newConsExpr = expr - (1 - y) * h_x0 == c.lower * y
 
                 if obj.is_indexed():
                     newConstraint.add((name, i, 'eq'), newConsExpr)
@@ -780,7 +1084,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 if NL:
                     newConsExpr = expr >= c.lower * y
                 else:
-                    newConsExpr = expr - (1 - y) * h_0 >= c.lower * y
+                    newConsExpr = expr - (1 - y) * h_x0 >= c.lower * y
 
                 if obj.is_indexed():
                     newConstraint.add((name, i, 'lb'), newConsExpr)
@@ -802,7 +1106,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 if NL:
                     newConsExpr = expr <= c.upper * y
                 else:
-                    newConsExpr = expr - (1 - y) * h_0 <= c.upper * y
+                    newConsExpr = expr - (1 - y) * h_x0 <= c.upper * y
 
                 if obj.is_indexed():
                     newConstraint.add((name, i, 'ub'), newConsExpr)
@@ -915,7 +1219,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 .private_data()
                 .disaggregation_constraint_map[original_var][disjunction]
             )
-        except:
+        except Exception:
             if raise_exception:
                 logger.error(
                     "It doesn't appear that '%s' is a variable that was "
