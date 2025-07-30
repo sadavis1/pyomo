@@ -21,7 +21,7 @@ from pyomo.common.modeling import unique_component_name
 from pyomo.common.errors import DeveloperError
 from pyomo.core.expr.numvalue import ZeroConstant
 import pyomo.core.expr as EXPR
-from pyomo.core.base import TransformationFactory
+from pyomo.core.base import TransformationFactory, SortComponents
 from pyomo.core import (
     Block,
     BooleanVar,
@@ -56,6 +56,8 @@ from pyomo.gdp.util import (
 )
 from pyomo.core.util import target_list
 from pyomo.core.expr.visitor import IdentifyVariableVisitor
+from pyomo.repn.linear import LinearRepnVisitor
+from pyomo.repn.util import VarRecorder
 from pyomo.util.vars_from_expressions import get_vars_from_components
 from pyomo.opt.base.solvers import SolverFactory
 from pyomo.opt.results.solver import TerminationCondition
@@ -394,9 +396,10 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             )
             if math.isfinite(val):
                 return x0_map, ComponentSet()
+        except ValueError:  # ('math domain error')
+            pass
         except Exception as e:  # what types can we throw here?
             breakpoint()
-            pass
         # Second, try making it well-defined by editing only the regular vars
         for x in fallback_vars:
             x.fix(0)
@@ -410,6 +413,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 unique_component_name(test_model, x.name), Reference(x)
             )
         feasible = self._solve_for_first_feasible_solution(test_model)
+        # breakpoint()
         # Third, try again, but edit all the vars
         if not feasible:
             for x in fallback_vars:
@@ -576,20 +580,22 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             #     vars_to_disaggregate[disjunct].add(var)
             #     all_vars_to_disaggregate.add(var)
             for disj in disjuncts:
-                if disj in local_vars_by_disjunct[disjunct]:
-                    if len(disjuncts) == 1:
-                        # was this a noop before?
-                        local_vars[disjunct].add(var)
-                        all_local_vars.add(var)
-                    else:
-                        vars_to_disaggregate[disjunct].add(var)
-                        all_vars_to_disaggregate.add(var)
-                    generalized_local_vars.add(var)
-                else:
+                if disj in local_vars_by_disjunct:
+                    if var in local_vars_by_disjunct[disj]:
+                        if len(disjuncts) == 1:
+                            # was this a noop before?
+                            local_vars[disj].add(var)
+                            all_local_vars.add(var)
+                        else:
+                            vars_to_disaggregate[disjunct].add(var)
+                            all_vars_to_disaggregate.add(var)
+                        generalized_local_vars.add(var)
+            if var not in generalized_local_vars:
+                for disj in disjuncts:
                     # Not a local var, so we must disaggregate, even if
                     # it's only on one disjunct.
-                    vars_to_disaggregate[disjunct].add(var)
-                    all_vars_to_disaggregate.add(var)
+                    vars_to_disaggregate[disj].add(var)
+                all_vars_to_disaggregate.add(var)
 
         # Find a well-defined point x_0. We need every constraint body
         # to successfully evaluate to something.
@@ -607,6 +613,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             )
         # Any var that got an offset cannot be local anymore, but it can
         # still be generalized local
+        # breakpoint()
         for var in offset_vars:
             if var in all_local_vars:
                 var_disjunct = next(iter(disjuncts_var_appears_in[var]))
@@ -710,7 +717,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             else:
                 disaggregatedExpr = 0
             for disjunct in disjuncts_var_appears_in[var]:
-                breakpoint()
+                # breakpoint()
                 disaggregatedExpr += disjunct_disaggregated_var_map[disjunct][var]
 
             cons_idx = len(disaggregationConstraint)
@@ -741,6 +748,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         x0_map,
         offset_vars,
     ):
+        # breakpoint()
         relaxationBlock = self._get_disjunct_transformation_block(obj, transBlock)
 
         # Put the disaggregated variables all on their own block so that we can
@@ -857,14 +865,14 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
 
         disaggregated_var_info.bigm_constraint_map[disaggregatedVar][disjunct] = {}
 
-        lb = original_var.lb - x0_map[original_var]
-        ub = original_var.ub - x0_map[original_var]
-        if lb is None or ub is None:
+        if original_var.lb is None or original_var.ub is None:
             raise GDP_Error(
                 "Variables that appear in disjuncts must be "
                 "bounded in order to use the hull "
                 "transformation! Missing bound for %s." % (original_var.name)
             )
+        lb = original_var.lb - x0_map[original_var]
+        ub = original_var.ub - x0_map[original_var]
 
         disaggregatedVar.setlb(min(0, lb))
         disaggregatedVar.setub(max(0, ub))
@@ -930,8 +938,12 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             unique = len(newConstraint)
             name = c.local_name + "_%s" % unique
 
-            # TODO: should this be a walker call?
-            NL = c.body.polynomial_degree() not in (0, 1)
+            # vid -> var
+            repn_var_map = {}
+            linear_repn = LinearRepnVisitor(
+                {}, var_recorder=VarRecorder(repn_var_map, SortComponents.deterministic)
+            ).walk_expression(c.body)
+            NL = linear_repn.nonlinear is not None
             EPS = self._config.EPS
             mode = self._config.perspective_function
 
@@ -1031,7 +1043,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                         # variables on c.body or something.
                         #
                         # if c.lower == x0_substitute_map[id(v[0])]:
-                        if False:
+                        if c.lower - linear_repn.constant * linear_repn.multiplier == 0:
                             # Setting a variable to 0 in a disjunct is
                             # *very* common. We should recognize that in
                             # that structure, the disaggregated variable

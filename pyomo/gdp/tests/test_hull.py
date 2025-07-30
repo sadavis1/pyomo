@@ -2884,6 +2884,18 @@ class LogicalConstraintsOnDisjuncts(unittest.TestCase):
         finally:
             sys.setrecursionlimit(rl)
 
+            
+class DomainRestrictionTest(unittest.TestCase):
+    def test_simple_case(self):
+        m = models.makeTwoTermDisj()
+        m.d[0].nonlinear = Constraint(expr=log(m.x - 1) >= 0)
+        TransformationFactory('gdp.hull').apply_to(m)
+        m.pprint()
+        # did not throw
+        #
+        # TODO: keep on the model somewhere what x0 was, and assert it
+        # has a nonzero element
+        
 
 @unittest.skipUnless(gurobi_available, "Gurobi is not available")
 class NestedDisjunctsInFlatGDP(unittest.TestCase):
