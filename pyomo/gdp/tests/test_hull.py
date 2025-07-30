@@ -2256,6 +2256,7 @@ class TestErrors(unittest.TestCase):
         relaxed_xor = hull.get_transformed_constraints(
             m.disjunction_disjuncts[0].nestedDisjunction.algebraic_constraint
         )
+
         self.assertEqual(len(relaxed_xor), 1)
         relaxed_xor = relaxed_xor[0]
         repn = generate_standard_repn(relaxed_xor.body)
@@ -2662,10 +2663,7 @@ class LogicalConstraintsOnDisjuncts(unittest.TestCase):
         c = cons[0]
         # hull transformation of z1 >= 1
         assertExpressionsStructurallyEqual(
-            self,
-            c.expr,
-            dis_z1 - (1 - m.d[1].binary_indicator_var) * 0
-            >= m.d[1].binary_indicator_var,
+            self, c.expr, dis_z1 >= m.d[1].binary_indicator_var
         )
 
         # then d[4]:
@@ -2835,10 +2833,7 @@ class LogicalConstraintsOnDisjuncts(unittest.TestCase):
         self.assertEqual(len(cons), 1)
         cons = cons[0]
         assertExpressionsStructurallyEqual(
-            self,
-            cons.expr,
-            1 - z3d - (2 - (z1d + z2d)) - (1 - m.d[4].binary_indicator_var) * (-1)
-            <= 0 * m.d[4].binary_indicator_var,
+            self, cons.expr, -z3d + z1d + z2d <= m.d[4].binary_indicator_var
         )
 
         # hull transformation of z3 >= 1
@@ -2848,9 +2843,7 @@ class LogicalConstraintsOnDisjuncts(unittest.TestCase):
         self.assertEqual(len(cons), 1)
         cons = cons[0]
         assertExpressionsStructurallyEqual(
-            self,
-            cons.expr,
-            z3d - (1 - m.d[4].binary_indicator_var) * 0 >= m.d[4].binary_indicator_var,
+            self, cons.expr, z3d >= m.d[4].binary_indicator_var
         )
 
         self.assertFalse(m.bwahaha.active)
@@ -2884,7 +2877,7 @@ class LogicalConstraintsOnDisjuncts(unittest.TestCase):
         finally:
             sys.setrecursionlimit(rl)
 
-            
+
 class DomainRestrictionTest(unittest.TestCase):
     def test_simple_case(self):
         m = models.makeTwoTermDisj()
@@ -2895,7 +2888,7 @@ class DomainRestrictionTest(unittest.TestCase):
         #
         # TODO: keep on the model somewhere what x0 was, and assert it
         # has a nonzero element
-        
+
 
 @unittest.skipUnless(gurobi_available, "Gurobi is not available")
 class NestedDisjunctsInFlatGDP(unittest.TestCase):
