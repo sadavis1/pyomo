@@ -938,11 +938,22 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             unique = len(newConstraint)
             name = c.local_name + "_%s" % unique
 
-            # vid -> var
-            repn_var_map = {}
+            # HACK: If I'm not treating fixed vars as permanent, I need
+            # the LinearRepnVisitor to pick them up, but it very
+            # strongly doesn't want to. So I'm going to unfix and refix
+            # which involves walking the expression twice, plus it's
+            # generally stupid
+            to_refix = ComponentSet()
+            if not self._config.assume_fixed_vars_permanent:
+                for var in EXPR.identify_variables(c.body, include_fixed=True):
+                    if var.fixed:
+                        to_refix.add(var)
+                        var.unfix()
             linear_repn = LinearRepnVisitor(
-                {}, var_recorder=VarRecorder(repn_var_map, SortComponents.deterministic)
+                {}, var_recorder=VarRecorder({}, SortComponents.deterministic)
             ).walk_expression(c.body)
+            for var in to_refix:
+                var.fix()
             NL = linear_repn.nonlinear is not None
             EPS = self._config.EPS
             mode = self._config.perspective_function
@@ -994,18 +1005,15 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 else:
                     raise RuntimeError("Unknown NL Hull mode")
             else:
-                expr = clone_without_expression_components(
-                    c.body,
-                    substitute=dict(
-                        # It is possible to do this substituting v
-                        # instead of v + x_0 here, but I think it would
-                        # require picking apart the affine function into
-                        # linear part and offset later... really that's
-                        # just evaluating it at zero, which should be no
-                        # problem... TODO consider this further.
-                        (var, subs + x0_substitute_map[var])
-                        for var, subs in var_substitute_map.items()
-                    ),
+                # For a linear constraint that looks like a^Tx + b <= c,
+                # the transformed constraint will be a^Tv <= lambda (c -
+                # b - a^Tx_0). Get the a^Tv here and note that b +
+                # a^Tx_0 is exactly h_x0 from earlier, so we will have
+                # it when we need it.
+                expr = linear_repn.multiplier * sum(
+                    coef * var_substitute_map[var]
+                    for var, coef in linear_repn.linear.items()
+                    if coef != 0
                 )
 
             if c.equality:
@@ -1022,28 +1030,19 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                     # complain to the user.
                     newConsExpr = expr == c.lower * y
                 else:
-                    v = list(EXPR.identify_variables(expr))
-                    if len(v) == 1:
-                        # TODO FIXME FIXME FIXME: this condition is
-                        # wrong; it triggers in a case like 2x=x0, but
-                        # that is not correct for x0 nonzero.
-                        #
-                        # TODO ask Emma about constraint
-                        # canonicalization. The old version of this
-                        # condition was clearly operating under the
-                        # assumption that c.body has no affine part (and
-                        # so is this edited version), but other parts of
-                        # the code (eg setting up newConsExpr) appear
-                        # not to be making that assumption, otherwise
-                        # they would be simpler.
-                        #
-                        # TODO: also this is wrong for another reason:
-                        # we already substituted so the id is not the
-                        # same as before. I should be identifying
-                        # variables on c.body or something.
-                        #
-                        # if c.lower == x0_substitute_map[id(v[0])]:
-                        if c.lower - linear_repn.constant * linear_repn.multiplier == 0:
+                    if len(linear_repn.linear) == 1:
+                        var, coef = next(iter(linear_repn.linear.items()))
+                        # Second clause of this condition happens iff
+                        # the constraint implies x = x0
+                        if (
+                            coef != 0
+                            and (
+                                c.lower - linear_repn.constant * linear_repn.multiplier
+                            )
+                            / (coef * linear_repn.multiplier)
+                            == x0_substitute_map[var]
+                        ):
+                            v = var_substitute_map[var]
                             # Setting a variable to 0 in a disjunct is
                             # *very* common. We should recognize that in
                             # that structure, the disaggregated variable
@@ -1054,17 +1053,18 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                             # is the origin or was passed manually, but
                             # that's fine - nonzero x_0 is already a
                             # rare special case.
-                            v[0].fix(0)
-                            # ESJ: If you ask where the transformed constraint is,
-                            # the answer is nowhere. Really, it is in the bounds of
+                            v.fix(0)
+                            # ESJ: If you ask where the transformed
+                            # constraint is, the answer is
+                            # nowhere. Really, it is in the bounds of
                             # this variable, so I'm going to return
-                            # it. Alternatively we could return an empty list, but I
-                            # think I like this better.
-                            constraint_map.transformed_constraints[c].append(v[0])
+                            # it. Alternatively we could return an empty
+                            # list, but I think I like this better.
+                            constraint_map.transformed_constraints[c].append(v)
                             # Reverse map also (this is strange)
-                            constraint_map.src_constraint[v[0]] = c
+                            constraint_map.src_constraint[v] = c
                             continue
-                    newConsExpr = expr - (1 - y) * h_x0 == c.lower * y
+                    newConsExpr = expr == (c.lower - h_x0) * y
 
                 if obj.is_indexed():
                     newConstraint.add((name, i, 'eq'), newConsExpr)
@@ -1096,7 +1096,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 if NL:
                     newConsExpr = expr >= c.lower * y
                 else:
-                    newConsExpr = expr - (1 - y) * h_x0 >= c.lower * y
+                    newConsExpr = expr >= (c.lower - h_x0) * y
 
                 if obj.is_indexed():
                     newConstraint.add((name, i, 'lb'), newConsExpr)
@@ -1118,7 +1118,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 if NL:
                     newConsExpr = expr <= c.upper * y
                 else:
-                    newConsExpr = expr - (1 - y) * h_x0 <= c.upper * y
+                    newConsExpr = expr <= (c.upper - h_x0) * y
 
                 if obj.is_indexed():
                     newConstraint.add((name, i, 'ub'), newConsExpr)
