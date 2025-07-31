@@ -2883,12 +2883,46 @@ class DomainRestrictionTest(unittest.TestCase):
         m = models.makeTwoTermDisj()
         m.d[0].nonlinear = Constraint(expr=log(m.x - 1) >= 0)
         TransformationFactory('gdp.hull').apply_to(m)
-        m.pprint()
         # did not throw
         #
         # TODO: keep on the model somewhere what x0 was, and assert it
         # has a nonzero element
 
+    def test_handle_fixed_disagg(self):
+        m = models.makeTwoTermDisj()
+        m.d[0].nonlinear = Constraint(expr=log(m.x - 1) >= 0)
+        m.x.fix(2)
+        TransformationFactory('gdp.hull').apply_to(m, assume_fixed_vars_permanent=False)
+        # TODO: assert x0 has a key for m.x
+
+    def test_handle_fixed_no_disagg(self):
+        m = models.makeTwoTermDisj()
+        m.d[0].nonlinear = Constraint(expr=log(m.x - 1) >= 0)
+        m.x.fix(2)
+        TransformationFactory('gdp.hull').apply_to(m, assume_fixed_vars_permanent=True)
+        # TODO: assert x0 does not have a key for m.x, also the
+        # transformed constraint here should be trivial
+
+    def test_well_defined_points_arg(self):
+        m = models.makeTwoTermDisj()
+        m.d[0].nonlinear = Constraint(expr=log(m.x - 1) >= 0)
+        TransformationFactory('gdp.hull').apply_to(m)
+        # did not throw
+        #
+        # TODO: check that well_defined_points is what is should be then
+        # redo by passing it
+
+    def test_no_good_point(self):
+        m = models.makeTwoTermDisj()
+        m.d[0].nonlinear = Constraint(expr=log(-(m.x)**2 - 1) >= 0)
+        self.assertRaisesRegex(
+            GDP_Error,
+            "Unable to find a well-defined point on disjunction .*",
+            TransformationFactory('gdp.hull').apply_to,
+            m,
+        )
+        
+    
 
 @unittest.skipUnless(gurobi_available, "Gurobi is not available")
 class NestedDisjunctsInFlatGDP(unittest.TestCase):

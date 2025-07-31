@@ -348,7 +348,8 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         return transBlock, True
 
     # From a test expression test_expr containing exactly the variables
-    # regular_vars and fallback_vars, get a point at which test_expr is
+    # regular_vars and fallback_vars, except possibly containing some
+    # additional fixed vars, get a point at which test_expr is
     # well-defined according to the following process:
     # (1) try the origin
     # (2) try fixing fallback_vars at zero, and allow a solver to
@@ -360,14 +361,16 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
     # were given a nonzero value as part of that process. If no such
     # point can be found, raise a GDP_Error.
     #
-    # For the purposes of this function, fixed vars are treated as
-    # legitimate variables and may be changed to find the
-    # point. However, this function will restore the original variable
-    # values and fixed statuses when it returns successfully.
-    #
-    # TODO: treat vars like params if they're fixed and we have
-    # assume_fixed_vars_permanent set? Or not?
-    def _get_well_defined_point(self, test_expr, regular_vars, fallback_vars):
+    # If we have assume_fixed_vars_permanent=True, then the fixed vars
+    # will not appear in regular_vars or fallback_vars, and we will not
+    # try to change them for the purpose of finding a well-defined
+    # point, nor will they appear in the x0_map. Otherwise, i.e.,
+    # whenever they are actually passed in, they will be treated as
+    # normal variables. We will restore the original variable values and
+    # fixed statuses when we return successfully.
+    def _get_well_defined_point(
+        self, test_expr, regular_vars, fallback_vars, disj_name
+    ):
         # First, see if test_expr is well-defined at the origin.
         x0_map = ComponentMap()
         orig_values = ComponentMap()
@@ -378,17 +381,6 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             orig_values[x] = value(x, exception=False)
             orig_fixed[x] = x.fixed
         try:
-            # TODO: value() is only needed here because there can be
-            # fixed variables with values that did not appear in
-            # regular_vars or fallback_vars, so they do not appear in
-            # x0_map. This is probably an error. See test
-            # test_do_not_disaggregate_fixed_variables
-            #
-            # TODO actually, maybe that solves my problem for me? If I
-            # don't get the fixed variables when we have
-            # assume_fixed_vars_permanent=True, then I'll never put them
-            # in x0_map and therefore never need to offset
-            # them... Investigate this.
             val = value(
                 EXPR.ExpressionReplacementVisitor(substitute=x0_map).walk_expression(
                     test_expr
@@ -398,8 +390,12 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 return x0_map, ComponentSet()
         except ValueError:  # ('math domain error')
             pass
-        except Exception as e:  # what types can we throw here?
-            breakpoint()
+        except Exception as e:  # can anything else be thrown here?
+            logger.error(
+                "While trying to evaluate an expression, got unexpected exception type "
+                f"{e.__class__.__name__} (was prepared for success or a ValueError)."
+            )
+            raise
         # Second, try making it well-defined by editing only the regular vars
         for x in fallback_vars:
             x.fix(0)
@@ -413,7 +409,6 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 unique_component_name(test_model, x.name), Reference(x)
             )
         feasible = self._solve_for_first_feasible_solution(test_model)
-        # breakpoint()
         # Third, try again, but edit all the vars
         if not feasible:
             for x in fallback_vars:
@@ -421,13 +416,12 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             feasible = self._solve_for_first_feasible_solution(test_model)
             if not feasible:
                 raise GDP_Error(
-                    # TODO finish error message
-                    "Unable to find a well-defined point on disjunction {disjunction}. "
+                    f"Unable to find a well-defined point on disjunction {disj_name}. "
                     "To carry out the hull transformation, each disjunction must have a "
                     "point at which every constraint function appearing in its "
                     "disjuncts is well-defined and finite. Please ensure such a point "
                     "actually exists, then if we still cannot find it, override our "
-                    "search process using the {TODO_PARAM_NAME} option."
+                    "search process using the `well_defined_points` option."
                 )
         # We have a point.
         if not math.isfinite(value(test_expr)):
@@ -498,14 +492,6 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         for disjunct in active_disjuncts:
             # create the key for each disjunct now
             disjunct_disaggregated_var_map[disjunct] = ComponentMap()
-            # for var in get_vars_from_components(
-            #     disjunct,
-            #     Constraint,
-            #     include_fixed=not self._config.assume_fixed_vars_permanent,
-            #     active=True,
-            #     sort=SortComponents.deterministic,
-            #     descend_into=Block,
-            # ):
             for con in disjunct.component_data_objects(
                 Constraint,
                 active=True,
@@ -610,6 +596,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 test_expr=sum(con.body for con in active_constraints),
                 regular_vars=all_vars_to_disaggregate,
                 fallback_vars=all_local_vars,
+                disj_name=obj.name,
             )
         # Any var that got an offset cannot be local anymore, but it can
         # still be generalized local
@@ -650,13 +637,6 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
 
         # Now add the reaggregation constraints
         for var in all_vars_to_disaggregate:
-            # There are two cases here: Either the var appeared in every
-            # disjunct in the disjunction, or it didn't. If it did, there's
-            # nothing special to do: All of the disaggregated variables have
-            # been created, and we can just proceed and make this constraint. If
-            # it didn't, we need one more disaggregated variable, correctly
-            # defined. And then we can make the constraint.
-            # TODO new comment:
             # If a var did not appear in every disjunct of the
             # disjunction, then we (intentionally) did not create a
             # complete set of disaggregated vars and corresponding
@@ -809,9 +789,6 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             bigmConstraint = Constraint(transBlock.lbub)
             relaxationBlock.add_component(conName, bigmConstraint)
 
-            # TODO unused code?
-            # parent_block = var.parent_block()
-
             self._declare_disaggregated_var_bounds(
                 original_var=var,
                 disaggregatedVar=var,
@@ -939,10 +916,10 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             name = c.local_name + "_%s" % unique
 
             # HACK: If I'm not treating fixed vars as permanent, I need
-            # the LinearRepnVisitor to pick them up, but it very
-            # strongly doesn't want to. So I'm going to unfix and refix
-            # which involves walking the expression twice, plus it's
-            # generally stupid
+            # the LinearRepnVisitor to pick them up, but it really
+            # doesn't want to. So I'm going to unfix and refix, which
+            # involves walking the expression twice, plus it's generally
+            # stupid
             to_refix = ComponentSet()
             if not self._config.assume_fixed_vars_permanent:
                 for var in EXPR.identify_variables(c.body, include_fixed=True):
@@ -962,12 +939,12 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             # we substitute the expression variables with the
             # disaggregated variables
             if not NL or mode == "FurmanSawayaGrossmann":
-                h_x0 = clone_without_expression_components(
-                    # TODO: is this properly handling fixed vars when we
-                    # consider them permanent? Do we need a value()
-                    # call?
-                    c.body,
-                    substitute=x0_substitute_map,
+                # Only permanently fixed vars are not being substituted
+                # by the x0_substitute_map
+                h_x0 = value(
+                    clone_without_expression_components(
+                        c.body, substitute=x0_substitute_map
+                    )
                 )
 
             y = disjunct.binary_indicator_var
@@ -1022,11 +999,10 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                     # probably nonconvex, depending on your definition
                     # of nonconvex (it is never in the standard form for
                     # a convex problem unless the constraint body is a
-                    # disguised affine function that we didn't catch,
-                    # but the feasible region may still be convex under
-                    # weaker conditions, e.g. quasilinearity). But even
-                    # so, this reformulation is still correct (though
-                    # some of its purpose evaporates), so we will not
+                    # disguised affine function, but the feasible region
+                    # may still be convex under weaker conditions,
+                    # e.g. quasilinearity). But even so, this
+                    # reformulation is still correct, so we will not
                     # complain to the user.
                     newConsExpr = expr == c.lower * y
                 else:
