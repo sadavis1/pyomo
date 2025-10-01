@@ -630,6 +630,14 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                     x0_map=x0_map,
                     offset_vars=offset_vars,
                 )
+        # The parent disjunct's local vars should include all of this
+        # disjunction's local or generalized local vars.
+        # NOTE not doing this in _transform_disjunct anymore; verify this still works.
+        # Compared to the previous version, this could lead to adding variables on
+        # disactivated disjuncts to the parent's local vars, but this should not
+        # change anything.
+        local_vars_by_disjunct[parent_disjunct].update(generalized_local_vars)
+        
         xorConstraint.add(index, (or_expr, 1))
         # map the DisjunctionData to its XOR constraint to mark it as
         # transformed
@@ -816,12 +824,9 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
             obj, obj, var_substitute_map, x0_substitute_map
         )
 
-        # Anything that was local to this Disjunct is also local to the parent,
-        # and just got "promoted" up there, so to speak.
-        #
-        # TODO: this needs to add generalized local vars too. Why is
-        # this in transform_disjunct, can't I just do this centrally???
-        parent_disjunct_local_vars.update(local_vars)
+        # NOTE: LocalVars promotion moved from here to caller; ensure
+        # nothing has gone horribly wrong
+        
         # deactivate disjunct so writers can be happy
         obj._deactivate_without_fixing_indicator()
 
