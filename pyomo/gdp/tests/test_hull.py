@@ -2921,7 +2921,16 @@ class DomainRestrictionTest(unittest.TestCase):
             TransformationFactory('gdp.hull').apply_to,
             m,
         )
-        
+
+    def test_various_nonlinear(self):
+        m = models.makeTwoTermDisj()
+        m.y = Var(bounds=(-5, 5))
+        m.d[0].log = Constraint(expr=log(m.y + 1) >= 0)
+        m.d[0].pow = Constraint(expr=m.y ** (-0.5) >= 0)
+        m.d[0].div = Constraint(expr=1 / (1 - m.y) >= 0)
+        TransformationFactory('gdp.hull').apply_to(m)
+        # did not throw
+        # TODO check that I properly handled the ill-defined stuff
     
 
 @unittest.skipUnless(gurobi_available, "Gurobi is not available")

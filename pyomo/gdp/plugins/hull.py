@@ -27,6 +27,7 @@ from pyomo.core import (
     BooleanVar,
     Connector,
     Constraint,
+    ConstraintList,
     Param,
     Set,
     SetOf,
@@ -55,7 +56,10 @@ from pyomo.gdp.util import (
     _warn_for_active_disjunct,
 )
 from pyomo.core.util import target_list
-from pyomo.core.expr.visitor import IdentifyVariableVisitor
+from pyomo.core.expr.visitor import (
+    IdentifyVariableVisitor,
+    StreamBasedExpressionVisitor,
+)
 from pyomo.repn.linear import LinearRepnVisitor
 from pyomo.repn.util import VarRecorder
 from pyomo.util.vars_from_expressions import get_vars_from_components
@@ -390,6 +394,8 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
                 return x0_map, ComponentSet()
         except ValueError:  # ('math domain error')
             pass
+        except ZeroDivisionError:
+            pass
         except Exception as e:  # can anything else be thrown here?
             logger.error(
                 "While trying to evaluate an expression, got unexpected exception type "
@@ -400,14 +406,20 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         for x in fallback_vars:
             x.fix(0)
         for x in regular_vars:
+            x.set_value(0)
             x.unfix()
         test_model = ConcreteModel()
-        test_model.obj = Objective(expr=test_expr)
+        test_model.test_expr = Expression(expr=test_expr)
+        test_model.obj = Objective(expr=0)
         # In case the solver can't deal with Vars it doesn't know about
         for x in itertools.chain(regular_vars, fallback_vars):
             test_model.add_component(
                 unique_component_name(test_model, x.name), Reference(x)
             )
+        test_model.well_defined_cons = ConstraintList()
+        WellDefinedConstraintGenerator(
+            cons_list=test_model.well_defined_cons
+        ).walk_expression(test_expr)
         feasible = self._solve_for_first_feasible_solution(test_model)
         # Third, try again, but edit all the vars
         if not feasible:
@@ -439,9 +451,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
     # This one is going to get a little janky...
     # Let's start with just baron for the time being.
     def _solve_for_first_feasible_solution(self, test_model):
-        results = SolverFactory("baron").solve(
-            test_model, options={'NumSol': 1, 'FirstFeas': 1}
-        )
+        results = SolverFactory("baron").solve(test_model, load_solutions=True)
         if results.solver.termination_condition is TerminationCondition.infeasible:
             return False
         if results.solver.status is not SolverStatus.ok:
@@ -637,7 +647,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
         # disactivated disjuncts to the parent's local vars, but this should not
         # change anything.
         local_vars_by_disjunct[parent_disjunct].update(generalized_local_vars)
-        
+
         xorConstraint.add(index, (or_expr, 1))
         # map the DisjunctionData to its XOR constraint to mark it as
         # transformed
@@ -826,7 +836,7 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
 
         # NOTE: LocalVars promotion moved from here to caller; ensure
         # nothing has gone horribly wrong
-        
+
         # deactivate disjunct so writers can be happy
         obj._deactivate_without_fixing_indicator()
 
@@ -1285,3 +1295,99 @@ class Hull_Reformulation(GDP_to_MIP_Transformation):
 class _Deprecated_Name_Hull(Hull_Reformulation):
     def __init__(self):
         super(_Deprecated_Name_Hull, self).__init__()
+
+
+# Walk the expression and, whenever encountering an expression that
+# could fail to be well-defined, create a constraint that keeps it
+# well-defined. This is done at the Pyomo level to make this capability
+# more generic instead of needing to specially set up the options for
+# each solver (plus, some solvers get rather buggy when used for this
+# task).
+class WellDefinedConstraintGenerator(StreamBasedExpressionVisitor):
+    def __init__(self, cons_list, **kwds):
+        self.cons_list = cons_list
+        super().__init__(**kwds)
+
+    # Whenever we exit a node (entering would also be fine) check if it
+    # has a restricted domain, and if it does add a corresponding
+    # constraint
+    def exitNode(self, node, data):
+        if node.__class__ in _handlers:
+            for con in _handlers[node.__class__](node):
+                self.cons_list.add(con)
+
+
+# epsilon for handling function domains with strict inequalities
+EPS = 1e-4
+
+def _handlePowExpression(node):
+    (base, exp) = node.args
+    # If exp is a NPV nonnegative integer, there are no restrictions on
+    # base. If exp is a NPV negative integer, base should not be
+    # zero. If exp is a NPV nonnegative fraction, base should not be
+    # negative. Otherwise, base should be strictly positive (as we can't
+    # be sure that exp could not be negative or fractional).
+
+    # Observe that this is problematic for LP and it needs to be a MIP!
+    # For now I'll just make it positive; this doesn't need to be perfect.
+    if exp.__class__ in EXPR.native_types or not exp.is_potentially_variable():
+        val = value(exp)
+        rounded = round(val)
+        if rounded == val:
+            if val >= 0:
+                return ()
+            else:
+                # return base != 0
+                return (base >= EPS,)
+        elif val >= 0:
+            return (base >= 0,)
+    return (base >= EPS,)
+
+
+def _handleDivisionExpression(node):
+    # No division by zero. Dividing by an NPV is always allowed.
+    arg = node.args[1]
+    if arg.__class__ in EXPR.native_types or not arg.is_potentially_variable():
+        return ()
+    # Same problem as before, this needs to be a MIP
+    return (arg >= EPS,)
+
+
+def _handleUnaryFunctionExpression(node):
+    arg = node.args[0]
+    if arg.__class__ in EXPR.native_types or not arg.is_potentially_variable():
+        return ()
+    if node.name == 'log':
+        return (arg >= EPS,)
+    if node.name == 'log10':
+        return (arg >= EPS,)
+    if node.name == 'sqrt':
+        return (arg >= 0,)
+    if node.name == 'asin':
+        return (arg >= -1, arg <= 1)
+    if node.name == 'acos':
+        return (arg >= -1, arg <= 1)
+    # It can't be pi/2 plus a multiple of pi. Not much we can do about
+    # this one.
+    # if node.name == 'tan':
+    if node.name == 'acosh':
+        return (arg >= 1,)
+    if node.name == 'atanh':
+        return (arg >= -1 + EPS, arg <= 1 - EPS)
+    # Other Pyomo unary functions should be well-defined.
+    return ()
+
+
+# All expression types that can potentially be
+# ill-defined:
+_handlers = {
+    # Note: we will skip all the NPV expression types, since if one
+    # of those fails to be well-defined, changing variable values is
+    # not going to fix it
+    
+    # You're on your own here
+    # EXPR.ExternalFunctionExpression,
+    EXPR.PowExpression: _handlePowExpression,
+    EXPR.DivisionExpression: _handleDivisionExpression,
+    EXPR.UnaryFunctionExpression: _handleUnaryFunctionExpression,
+}
