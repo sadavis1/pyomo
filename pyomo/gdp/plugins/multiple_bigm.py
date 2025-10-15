@@ -12,15 +12,22 @@
 import itertools
 import logging
 import math
-import multiprocessing
 import os
 import threading
+import enum
 
 from pyomo.common.collections import ComponentMap, ComponentSet
-from pyomo.common.config import ConfigDict, ConfigValue
+from pyomo.common.config import (
+    ConfigDict,
+    ConfigValue,
+    InEnum,
+    PositiveInt,
+    document_class_CONFIG,
+)
 from pyomo.common.gc_manager import PauseGC
 from pyomo.common.modeling import unique_component_name
-from pyomo.common.dependencies import dill, dill_available
+from pyomo.common.dependencies import dill, dill_available, multiprocessing
+from pyomo.common.enums import SolverAPIVersion
 
 from pyomo.core import (
     Block,
@@ -48,8 +55,6 @@ from pyomo.gdp.plugins.bigm_mixin import (
 from pyomo.gdp.plugins.gdp_to_mip_transformation import GDP_to_MIP_Transformation
 from pyomo.gdp.util import _to_dict
 from pyomo.opt import SolverFactory, TerminationCondition
-from pyomo.contrib.solver.common.base import SolverBase as NewSolverBase
-from pyomo.contrib.solver.common.base import LegacySolverWrapper
 from pyomo.repn import generate_standard_repn
 
 from weakref import ref as weakref_ref
@@ -86,38 +91,34 @@ def Solver(val):
         return SolverFactory(val)
     if not hasattr(val, 'solve'):
         raise ValueError("Expected a string or solver object (with solve() method)")
-    if isinstance(val, NewSolverBase) and not isinstance(val, LegacySolverWrapper):
-        raise ValueError(
-            "Please pass an old-style solver object, using the "
-            "LegacySolverWrapper mechanism if necessary."
-        )
+    if not hasattr(val, 'api_version') or val.api_version() is not SolverAPIVersion.V1:
+        raise ValueError("Solver object should support the V1 solver API version")
     return val
 
 
-def ProcessStartMethod(val):
-    if val in {'spawn', 'fork', 'forkserver', None}:
-        return val
-    else:
-        raise ValueError("Expected one of 'spawn', 'fork', or 'forkserver', or None.")
+class ProcessStartMethod(str, enum.Enum):
+    spawn = 'spawn'
+    fork = 'fork'
+    forkserver = 'forkserver'
 
 
 @TransformationFactory.register(
     'gdp.mbigm',
     doc="Relax disjunctive model using big-M terms specific to each disjunct",
 )
+@document_class_CONFIG(methods=['apply_to', 'create_using'])
 class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
     """
-    Implements the multiple big-M transformation from [1]. Note that this
+    Implements the multiple big-M transformation from [TG15]_. Note that this
     transformation is no different than the big-M transformation for two-
     term disjunctions, but that it may provide a tighter relaxation for
     models containing some disjunctions with three or more terms.
-
-    [1] Francisco Trespalaios and Ignacio E. Grossmann, "Improved Big-M
-        reformulation for generalized disjunctive programs," Computers and
-        Chemical Engineering, vol. 76, 2015, pp. 98-103.
     """
 
+    #: Global class configuration;
+    #: see :ref:`pyomo.gdp.plugins.multiple_bigm.MultipleBigMTransformation::CONFIG`.
     CONFIG = ConfigDict('gdp.mbigm')
+
     CONFIG.declare(
         'targets',
         ConfigValue(
@@ -137,10 +138,13 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
         ConfigValue(
             default=False,
             domain=bool,
-            description="Boolean indicating whether or not to transform so that "
-            "the transformed model will still be valid when fixed Vars are "
-            "unfixed.",
+            description="If False, transformed models will still be valid "
+            "after unfixing fixed Vars",
             doc="""
+        Boolean indicating whether or not to transform so that
+        the transformed model will still be valid when fixed Vars are
+        unfixed.
+
         This is only relevant when the transformation will be calculating M
         values. If True, the transformation will calculate M values assuming
         that fixed variables will always be fixed to their current values. This
@@ -169,6 +173,8 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
             domain=_to_dict,
             description="Big-M values to use while relaxing constraints",
             doc="""
+        Big-M values to use while relaxing constraints.
+
         A user-specified dict or ComponentMap mapping tuples of Constraints
         and Disjuncts to Big-M values valid for relaxing the constraint if
         the Disjunct is chosen.
@@ -186,10 +192,13 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
         ConfigValue(
             default=True,
             domain=bool,
-            description="Flag indicating whether or not to handle disjunctive "
-            "constraints that bound a single variable in a single (tighter) "
-            "constraint, rather than one per Disjunct.",
+            description="Combine constraints in multiple disjuncts that "
+            "bound a single variable into a single constraint",
             doc="""
+        Flag indicating whether or not to handle disjunctive
+        constraints that bound a single variable in a single
+        constraint, rather than one per Disjunct.
+
         Given the not-uncommon special structure:
 
         [l_1 <= x <= u_1] v [l_2 <= x <= u_2] v ... v [l_K <= x <= u_K],
@@ -203,16 +212,13 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
         This relaxation is as tight and has fewer constraints. This option is
         a flag to tell the mbigm transformation to detect this structure and
         handle it specially. Note that this is a special case of the 'Hybrid
-        Big-M Formulation' from [2] that takes advantage of the common left-
+        Big-M Formulation' from [Vie15]_ that takes advantage of the common left-
         hand side matrix for disjunctive constraints that bound a single
         variable.
 
         Note that we do not use user-specified M values for these constraints
         when this flag is set to True: If tighter bounds exist then they
         they should be put in the constraints.
-
-        [2] Juan Pablo Vielma, "Mixed Integer Linear Programming Formluation
-            Techniques," SIAM Review, vol. 57, no. 1, 2015, pp. 3-57.
         """,
         ),
     )
@@ -221,10 +227,12 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
         ConfigValue(
             default=False,
             domain=bool,
-            description="Flag indicating if only bound constraints should be "
-            "transformed with multiple-bigm, or if all the disjunctive "
-            "constraints should.",
+            description="If True, only transform univariate bound constraints.",
             doc="""
+        Flag indicating if only bound constraints should be transformed
+        with multiple-bigm, or if all the disjunctive constraints
+        should.
+
         Sometimes it is only computationally advantageous to apply multiple-
         bigm to disjunctive constraints with the special structure:
 
@@ -242,11 +250,13 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
         'threads',
         ConfigValue(
             default=None,
-            domain=int,
+            domain=PositiveInt,
             description="Number of worker processes to use when estimating M values",
             doc="""
+            Number of worker processes to use when estimating M values.
+
             If not specified, use up to the number of available cores, minus
-            one. If set to one or less, do not spawn processes, and revert to
+            one. If set to 1, do not spawn processes, and revert to
             single-threaded operation.
             """,
         ),
@@ -255,18 +265,21 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
         'process_start_method',
         ConfigValue(
             default=None,
-            domain=ProcessStartMethod,
+            domain=InEnum(ProcessStartMethod),
             description="Start method used for spawning processes during M calculation",
             doc="""
-            Options are 'fork', 'spawn', and 'forkserver', or None. See the Python
+            Start method used for spawning processes during M calculation.
+
+            Options are the elements of the enum ProcessStartMethod, or equivalently the
+            strings 'fork', 'spawn', or 'forkserver', or None. See the Python
             multiprocessing documentation for a full description of each of these. When
             None is passed, we determine a reasonable default. On POSIX, the default is
             'fork', unless we detect that Python has multiple threads at the time the
             process pool is created, in which case we instead use 'forkserver'. On
             Windows, the default and only possible option is 'spawn'. Note that if
             'spawn' or 'forkserver' are selected, we depend on the `dill` module for
-            pickling, and model instances must be pickleable using `dill`. This option
-            is ignored if `threads` is set to one or less.
+            pickling, and model instances must be pickleable using `dill`. This option is
+            ignored if `threads` is set to 1.
             """,
         ),
     )
@@ -278,6 +291,8 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
             description="When estimating M values, use the primal bound "
             "instead of the dual bound.",
             doc="""
+            When estimating M values, use the primal bound instead of the dual bound.
+
             This is necessary when using a local solver such as ipopt, but be
             aware that interior feasible points for this subproblem do not give
             valid values for M. That is, in the presence of numerical error,
@@ -414,10 +429,11 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
                     )
 
                 # start doing transformation
-                disjunction_setup[t] = (transBlock, algebraic_constraint) = (
+                disjunction_setup[t] = (trans_block, algebraic_constraint) = (
                     self._setup_transform_disjunctionData(t, gdp_tree.root_disjunct(t))
                 )
-
+                # Unlike python set(), ComponentSet keeps a stable
+                # ordering, so we use it for the sake of determinism.
                 active_disjuncts[t] = ComponentSet(
                     disj for disj in t.disjuncts if disj.active
                 )
@@ -426,7 +442,7 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
                 if self._config.reduce_bound_constraints:
                     transformed_constraints.update(
                         self._transform_bound_constraints(
-                            active_disjuncts[t], transBlock, arg_Ms
+                            active_disjuncts[t], trans_block, arg_Ms
                         )
                     )
                 # Get the jobs to calculate missing M values for this Disjunction. We
@@ -440,7 +456,7 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
                         arg_Ms,
                         Ms,
                         jobs,
-                        transBlock,
+                        trans_block,
                     )
         # (Now exiting the DisjunctionDatas loop)
         if jobs:
@@ -506,7 +522,7 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
                         M,
                         Ms[constraint, other_disjunct][1],
                     )
-                transBlock._mbm_values[constraint, other_disjunct] = Ms[
+                trans_block._mbm_values[constraint, other_disjunct] = Ms[
                     constraint, other_disjunct
                 ]
 
@@ -515,14 +531,14 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
 
         # Iterate the Disjunctions again and actually transform them
         for disjunction, (
-            transBlock,
+            trans_block,
             algebraic_constraint,
         ) in disjunction_setup.items():
             or_expr = 0
             for disjunct in active_disjuncts[disjunction]:
                 or_expr += disjunct.indicator_var.get_associated_binary()
                 self._transform_disjunct(
-                    disjunct, transBlock, active_disjuncts[disjunction], Ms
+                    disjunct, trans_block, active_disjuncts[disjunction], Ms
                 )
             algebraic_constraint.add(disjunction.index(), or_expr == 1)
             # map the DisjunctionData to its XOR constraint to mark it as
@@ -532,9 +548,6 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
             )
             disjunction.deactivate()
 
-    # Do the inner work setting up M calculation jobs for one
-    # disjunction. This mutates the parameters Ms, jobs,
-    # transBlock._mbm_values, and also self.used_args.
     def _setup_jobs_for_disjunction(
         self,
         disjunction,
@@ -543,8 +556,29 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
         arg_Ms,
         Ms,
         jobs,
-        transBlock,
+        trans_block,
     ):
+        """
+        Do the inner work setting up or skipping M calculation jobs for a
+        disjunction. Mutate the parameters Ms, jobs, trans_block._mbm_values,
+        and self.used_args.
+
+        Args:
+            self: self.used_args map from (constraint, disjunct) to M tuple
+                updated with the keys used from arg_Ms
+            disjunction: disjunction to set up the jobs for
+            active_disjuncts: map from disjunctions to ComponentSets of active
+                disjuncts
+            transformed_constraints: set of already transformed Constraints
+            arg_Ms: user-provided map from (constraint, disjunct) to M value
+                or tuple
+            Ms: working map from (constraint, disjunct) to M tuples to update
+            jobs: working list of (constraint, other_disjunct,
+                unsuccessful_solve_msg, is_upper) job tuples to update
+            trans_block: working transformation block. Update the
+                trans_block._mbigm_values map from (constraint, disjunct) to
+                M tuples
+        """
         for disjunct, other_disjunct in itertools.product(
             active_disjuncts[disjunction], active_disjuncts[disjunction]
         ):
@@ -584,14 +618,14 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
                     )
 
                 Ms[constraint, other_disjunct] = (lower_M, upper_M)
-                transBlock._mbm_values[constraint, other_disjunct] = (lower_M, upper_M)
+                trans_block._mbm_values[constraint, other_disjunct] = (lower_M, upper_M)
 
-    def _transform_disjunct(self, obj, transBlock, active_disjuncts, Ms):
+    def _transform_disjunct(self, obj, trans_block, active_disjuncts, Ms):
         # We've already filtered out deactivated disjuncts, so we know obj is
         # active.
 
         # Make a relaxation block if we haven't already.
-        relaxationBlock = self._get_disjunct_transformation_block(obj, transBlock)
+        relaxation_block = self._get_disjunct_transformation_block(obj, trans_block)
 
         # Transform everything on the disjunct
         self._transform_block_components(obj, obj, active_disjuncts, Ms)
@@ -601,19 +635,19 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
 
     def _transform_constraint(self, obj, disjunct, active_disjuncts, Ms):
         # we will put a new transformed constraint on the relaxation block.
-        relaxationBlock = disjunct._transformation_block()
-        constraint_map = relaxationBlock.private_data('pyomo.gdp')
-        transBlock = relaxationBlock.parent_block()
+        relaxation_block = disjunct._transformation_block()
+        constraint_map = relaxation_block.private_data('pyomo.gdp')
+        trans_block = relaxation_block.parent_block()
 
         # Though rare, it is possible to get naming conflicts here
         # since constraints from all blocks are getting moved onto the
         # same block. So we get a unique name
         name = unique_component_name(
-            relaxationBlock, obj.getname(fully_qualified=False)
+            relaxation_block, obj.getname(fully_qualified=False)
         )
 
         newConstraint = Constraint(Any)
-        relaxationBlock.add_component(name, newConstraint)
+        relaxation_block.add_component(name, newConstraint)
 
         for i in sorted(obj.keys()):
             c = obj[i]
@@ -675,7 +709,7 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
             # deactivate now that we have transformed
             c.deactivate()
 
-    def _transform_bound_constraints(self, active_disjuncts, transBlock, Ms):
+    def _transform_bound_constraints(self, active_disjuncts, trans_block, Ms):
         # first we're just going to find all of them
         bounds_cons = ComponentMap()
         lower_bound_constraints_by_var = ComponentMap()
@@ -718,7 +752,7 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
                         else:
                             upper_bound_constraints_by_var[v] = {(c, disj)}
                     # Add the M values to the dictionary
-                    transBlock._mbm_values[c, disj] = M
+                    trans_block._mbm_values[c, disj] = M
 
                     # We can't deactivate yet because we will still be solving
                     # this Disjunct when we calculate M values for non-bounds
@@ -729,16 +763,16 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
         # Now we actually construct the constraints. We do this separately so
         # that we can make sure that we have a term for every active disjunct in
         # the disjunction (falling back on the variable bounds if they are there
-        transformed = transBlock.transformed_bound_constraints
+        transformed = trans_block.transformed_bound_constraints
         offset = len(transformed)
         for i, (v, (lower_dict, upper_dict)) in enumerate(bounds_cons.items()):
             lower_rhs = 0
             upper_rhs = 0
             for disj in active_disjuncts:
-                relaxationBlock = self._get_disjunct_transformation_block(
-                    disj, transBlock
+                relaxation_block = self._get_disjunct_transformation_block(
+                    disj, trans_block
                 )
-                constraint_map = relaxationBlock.private_data('pyomo.gdp')
+                constraint_map = relaxation_block.private_data('pyomo.gdp')
                 if len(lower_dict) > 0:
                     M = lower_dict.get(disj, None)
                     if M is None:
@@ -796,23 +830,30 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
             self._config.process_start_method
             if self._config.process_start_method is not None
             else (
-                'spawn'
+                ProcessStartMethod.spawn
                 if os.name == 'nt'
-                else 'forkserver' if len(threading.enumerate()) > 1 else 'fork'
+                else (
+                    ProcessStartMethod.forkserver
+                    if len(threading.enumerate()) > 1
+                    else ProcessStartMethod.fork
+                )
             )
         )
         logger.info(
             f"Running {num_jobs} jobs on {threads} worker "
             f"processes with process start method {method}."
         )
-        if method == 'spawn' or method == 'forkserver':
+        if (
+            method == ProcessStartMethod.spawn
+            or method == ProcessStartMethod.forkserver
+        ):
             if not dill_available:
                 raise GDP_Error(
                     "Dill is required when spawning processes using "
                     "methods 'spawn' or 'forkserver', but it could "
                     "not be imported."
                 )
-            pool = multiprocessing.get_context(method).Pool(
+            pool = multiprocessing.get_context(method.value).Pool(
                 processes=threads,
                 initializer=_setup_spawn,
                 initargs=(
@@ -822,7 +863,7 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
                     self._config.use_primal_bound,
                 ),
             )
-        elif method == 'fork':
+        elif method == ProcessStartMethod.fork:
             _thread_local.model = instance
             _thread_local.solver = self._config.solver
             _thread_local.config_use_primal_bound = self._config.use_primal_bound
@@ -832,15 +873,15 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
         return pool
 
     def _add_transformation_block(self, to_block):
-        transBlock, new_block = super()._add_transformation_block(to_block)
+        trans_block, new_block = super()._add_transformation_block(to_block)
 
         if new_block:
             # Will store M values as we transform
-            transBlock._mbm_values = {}
-            transBlock.transformed_bound_constraints = Constraint(
+            trans_block._mbm_values = {}
+            trans_block.transformed_bound_constraints = Constraint(
                 NonNegativeIntegers, ['lb', 'ub']
             )
-        return transBlock, new_block
+        return trans_block, new_block
 
     def _warn_for_active_suffix(self, suffix, disjunct, active_disjuncts, Ms):
         if suffix.local_name == 'BigM':
@@ -896,11 +937,11 @@ class MultipleBigMTransformation(GDP_to_MIP_Transformation, _BigM_MixIn):
             sort=SortComponents.deterministic,
         ):
             if disjunction.algebraic_constraint is not None:
-                transBlock = disjunction.algebraic_constraint.parent_block()
+                trans_block = disjunction.algebraic_constraint.parent_block()
                 # Don't necessarily assume all disjunctions were transformed
                 # with multiple bigm...
-                if hasattr(transBlock, "_mbm_values"):
-                    all_ms.update(transBlock._mbm_values)
+                if hasattr(trans_block, "_mbm_values"):
+                    all_ms.update(trans_block._mbm_values)
 
         return all_ms
 

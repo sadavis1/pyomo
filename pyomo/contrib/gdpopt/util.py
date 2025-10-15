@@ -62,7 +62,7 @@ time_limit_option = {
 }
 
 
-class _DoNothing(object):
+class _DoNothing:
     """Do nothing, literally.
 
     This class is used in situations of "do something if attribute exists."
@@ -81,7 +81,7 @@ class _DoNothing(object):
         return _do_nothing
 
 
-class SuppressInfeasibleWarning(object):
+class SuppressInfeasibleWarning:
     """Suppress the infeasible model warning message from solve().
 
     The "WARNING: Loading a SolverResults object with a warning status" warning
@@ -242,7 +242,7 @@ def fix_discrete_var(var, val, config):
             var.fix(val, skip_validation=True)
 
 
-class fix_discrete_solution_in_subproblem(object):
+class fix_discrete_solution_in_subproblem:
     def __init__(
         self,
         true_disjuncts,

@@ -24,6 +24,7 @@ from pyomo.common.errors import InvalidValueError
 from pyomo.common.log import LoggingIntercept
 from pyomo.common.tee import capture_output
 from pyomo.core.base.set_types import NonNegativeIntegers
+from pyomo.core.base.units_container import pint_available
 from pyomo.repn.plugins import nl_writer as pyomo_nl_writer
 import pyomo.repn.ampl as pyomo_ampl_repn
 from pyomo.common.dependencies import (
@@ -61,15 +62,20 @@ from pyomo.environ import (
     value,
     maximize,
     minimize,
+    units,
 )
 
 from pyomo.contrib.pyros.solve_data import ROSolveResults
 from pyomo.contrib.pyros.uncertainty_sets import (
-    BoxSet,
+    _setup_standard_uncertainty_set_constraint_block,
     AxisAlignedEllipsoidalSet,
-    FactorModelSet,
-    IntersectionSet,
+    BoxSet,
     DiscreteScenarioSet,
+    FactorModelSet,
+    Geometry,
+    IntersectionSet,
+    UncertaintyQuantification,
+    UncertaintySet,
 )
 from pyomo.contrib.pyros.util import (
     IterationLogRecord,
@@ -115,7 +121,7 @@ ipopt_available = _ipopt.available(exception_flag=False)
 
 
 # @SolverFactory.register("time_delay_solver")
-class TimeDelaySolver(object):
+class TimeDelaySolver:
     """
     Solver which puts program to sleep for a specified
     duration after having been invoked a specified number
@@ -641,57 +647,46 @@ class RegressionTest(unittest.TestCase):
             msg="Robust infeasible model terminated in 0 iterations (nominal case).",
         )
 
-    @unittest.skipUnless(
-        baron_license_is_valid, "Global NLP solver is not available and licensed."
-    )
-    @unittest.skipUnless(
-        baron_version < (23, 1, 5) or baron_version >= (23, 6, 23),
-        "Test known to fail for BARON 23.1.5 and versions preceding 23.6.23",
-    )
+    @unittest.skipUnless(ipopt_available, "IPOPT not available.")
     def test_terminate_with_max_iter(self):
-        m = build_leyffer_two_cons()
+        m = ConcreteModel()
+        m.q = Param(initialize=0, mutable=True)
+        m.x = Var(initialize=None, bounds=[-2, 2])
+        m.con = Constraint(expr=m.x >= m.q)
+        m.obj = Objective(expr=m.x)
 
-        # Define the uncertainty set
-        interval = BoxSet(bounds=[(0.25, 2)])
-
-        # Instantiate the PyROS solver
+        ipopt = SolverFactory("ipopt")
         pyros_solver = SolverFactory("pyros")
-
-        # Define subsolvers utilized in the algorithm
-        local_subsolver = SolverFactory('baron')
-        global_subsolver = SolverFactory("baron")
-
-        # Call the PyROS solver
-        results = pyros_solver.solve(
+        pyros_args = dict(
             model=m,
-            first_stage_variables=[m.x1],
-            second_stage_variables=[m.x2],
-            uncertain_params=[m.u],
-            uncertainty_set=interval,
-            local_solver=local_subsolver,
-            global_solver=global_subsolver,
-            options={
-                "objective_focus": ObjectiveType.worst_case,
-                "solve_master_globally": True,
-                "max_iter": 1,
-                "decision_rule_order": 2,
-            },
+            first_stage_variables=[m.x],
+            second_stage_variables=[],
+            uncertain_params=[m.q],
+            uncertainty_set=BoxSet([[0, 1]]),
+            local_solver=ipopt,
+            global_solver=ipopt,
+            decision_rule_order=2,
         )
 
+        # should require more than one iteration to solve,
+        # so max_iter status expected
+        res1 = pyros_solver.solve(**pyros_args, max_iter=1)
         self.assertEqual(
-            results.pyros_termination_condition,
-            pyrosTerminationCondition.max_iter,
-            msg="Returned termination condition is not return max_iter.",
+            res1.pyros_termination_condition, pyrosTerminationCondition.max_iter
         )
+        self.assertEqual(res1.iterations, 1)
+        self.assertAlmostEqual(res1.final_objective_value, 0)
+        self.assertEqual(m.x.value, None)
 
+        # should require only 2 iterations to solve,
+        # so robust feasible solution expected
+        res2 = pyros_solver.solve(**pyros_args, max_iter=2)
         self.assertEqual(
-            results.iterations,
-            1,
-            msg=(
-                f"Number of iterations in results object is {results.iterations}, "
-                f"but expected value 1."
-            ),
+            res2.pyros_termination_condition, pyrosTerminationCondition.robust_feasible
         )
+        self.assertEqual(res2.iterations, 2)
+        self.assertAlmostEqual(res2.final_objective_value, 1)
+        self.assertAlmostEqual(m.x.value, 1)
 
     @unittest.skipUnless(
         baron_license_is_valid, "Global NLP solver is not available and licensed."
@@ -2848,75 +2843,62 @@ class testModelMultipleObjectives(unittest.TestCase):
         )
 
 
-class TestMasterFeasibilityUnitConsistency(unittest.TestCase):
+class TestAvoidUnitConsistencyChecks(unittest.TestCase):
     """
     Test cases for models with unit-laden model components.
     """
 
-    @unittest.skipUnless(
-        scip_available and scip_license_is_valid, "SCIP is not available and licensed."
-    )
-    def test_two_stg_mod_with_axis_aligned_set(self):
-        """
-        Test two-stage model with `AxisAlignedEllipsoidalSet`
-        as the uncertainty set.
-        """
+    @parameterized.expand([[True], [False]])
+    @unittest.skipUnless(ipopt_available, "IPOPT is not available.")
+    @unittest.skipUnless(pint_available, "Package 'pint' is not available")
+    def test_avoid_unit_consistency_checks(self, use_discrete):
         m = ConcreteModel()
-        m.x1 = Var(initialize=0, bounds=(0, None))
-        m.x2 = Var(initialize=0, bounds=(0, None), units=u.m)
-        m.x3 = Var(initialize=0, bounds=(None, None))
-        m.u1 = Param(initialize=1.125, mutable=True, units=u.s)
-        m.u2 = Param(initialize=1, mutable=True, units=u.m**2)
+        m.q = Param(initialize=0, mutable=True, units=units.s)
+        m.x = Var(bounds=[-2, 2], units=units.m)
+        m.z = Var(bounds=[-2, 2])
+        m.y = Var(units=units.m**2)
+        # notice: units/dimensions in the objective and constraint
+        #         expressions are inconsistent
+        m.eq = Constraint(expr=m.y == m.x + m.z + m.q)
+        m.con = Constraint(expr=m.x >= m.q)
+        m.obj = Objective(expr=m.x + m.z)
 
-        m.con1 = Constraint(expr=m.x1 * m.u1 ** (0.5) - m.x2 * m.u1 <= 2)
-        m.con2 = Constraint(expr=m.x1**2 - m.x2**2 * m.u1 == m.x3)
-
-        m.obj = Objective(expr=(m.x1 - 4) ** 2 + (m.x2 - m.u2) ** 2)
-
-        # Define the uncertainty set
-        # we take the parameter `u2` to be 'fixed'
-        ellipsoid = AxisAlignedEllipsoidalSet(center=[1.125, 1], half_lengths=[1, 0])
-
-        # Instantiate the PyROS solver
+        ipopt = SolverFactory("ipopt")
         pyros_solver = SolverFactory("pyros")
 
-        # Define subsolvers utilized in the algorithm
-        local_subsolver = SolverFactory("scip")
-        global_subsolver = SolverFactory("scip")
-
-        # Call the PyROS solver
-        # note: second-stage variable and uncertain params have units
+        # separate tests for discrete and non-discrete
+        # to ensure discrete separation is also covered
+        uncertainty_set = (
+            DiscreteScenarioSet([[0], [1]]) if use_discrete else BoxSet([[0, 1]])
+        )
         results = pyros_solver.solve(
             model=m,
-            first_stage_variables=[m.x1],
-            second_stage_variables=[m.x2],
-            uncertain_params=[m.u1, m.u2],
-            uncertainty_set=ellipsoid,
-            local_solver=local_subsolver,
-            global_solver=global_subsolver,
+            first_stage_variables=[m.x],
+            second_stage_variables=[m.z],
+            uncertain_params=[m.q],
+            uncertainty_set=uncertainty_set,
+            # choose nonstatic DR to cover DR polishing problem
+            decision_rule_order=1,
+            local_solver=ipopt,
+            global_solver=ipopt,
             options={
                 "objective_focus": ObjectiveType.worst_case,
                 "solve_master_globally": True,
             },
         )
 
-        # check successful termination
-        # and that more than one iteration required
         self.assertEqual(
             results.pyros_termination_condition,
             pyrosTerminationCondition.robust_optimal,
-            msg="Did not identify robust optimal solution to problem instance.",
         )
-        self.assertGreater(
-            results.iterations,
-            1,
-            msg=(
-                "PyROS requires no more than one iteration to solve the model."
-                " Hence master feasibility problem construction not tested."
-                " Consider implementing a more challenging model for this"
-                " test case."
-            ),
-        )
+        self.assertEqual(results.iterations, 2)
+        self.assertAlmostEqual(results.final_objective_value, -1)
+        self.assertAlmostEqual(m.x.value, 1)
+        self.assertAlmostEqual(m.z.value, -2)
+        # note: worst-case realization is q=0, so expect
+        #       y = 1 + (-2) + 0 = -1
+        #       due to the equality constraint
+        self.assertAlmostEqual(m.y.value, -1)
 
 
 class TestSubsolverTiming(unittest.TestCase):
@@ -3793,6 +3775,217 @@ class TestPyROSSubproblemWriter(unittest.TestCase):
         )
 
 
+class ZeroDimensionalSet(UncertaintySet):
+    @property
+    def geometry(self):
+        return Geometry.LINEAR
+
+    @property
+    def parameter_bounds(self):
+        return []
+
+    @property
+    def dim(self):
+        return 0
+
+    @property
+    def type(self):
+        return "zero-d"
+
+    def validate(self, config):
+        pass
+
+    def point_in_set(self, point):
+        if list(point):
+            raise ValueError
+        return True
+
+    def set_as_constraint(self, uncertain_params=None, block=None):
+        block, params, cons, auxvars = _setup_standard_uncertainty_set_constraint_block(
+            block=block,
+            uncertain_param_vars=uncertain_params,
+            num_auxiliary_vars=None,
+            dim=0,
+        )
+        return UncertaintyQuantification(
+            block=block,
+            uncertain_param_vars=params,
+            auxiliary_vars=auxvars,
+            uncertainty_cons=list(cons.values()),
+        )
+
+
+class TestPyROSNoVarsParams(unittest.TestCase):
+    """
+    Test PyROS is capable of solving models without variables
+    or uncertain parameters.
+    """
+
+    @unittest.skipUnless(ipopt_available, "IPOPT is not available")
+    def test_pyros_trivial_block(self):
+        """
+        Test PyROS solver successfully operates on a model
+        with no variables, constraints, or uncertain parameters.
+        """
+        mdl = ConcreteModel()
+        mdl.obj = Objective(expr=0)
+
+        # prepare solvers
+        ipopt = SolverFactory("ipopt")
+        pyros = SolverFactory("pyros")
+
+        with LoggingIntercept(level=logging.WARNING) as LOG:
+            res = pyros.solve(
+                model=mdl,
+                first_stage_variables=[],
+                second_stage_variables=[],
+                uncertain_params=[],
+                uncertainty_set=ZeroDimensionalSet(),
+                local_solver=ipopt,
+                global_solver=ipopt,
+                objective_focus="worst_case",
+            )
+
+        log_msg = LOG.getvalue()
+        self.assertRegex(
+            log_msg,
+            "NOTE: No variables.*appear in the active model objective.*constraints",
+        )
+        # need 2 iterations to satisfy epigraph constraint
+        # due to worst-case objective focus
+        self.assertEqual(res.iterations, 1)
+        self.assertAlmostEqual(res.final_objective_value, 0)
+        self.assertEqual(
+            res.pyros_termination_condition, pyrosTerminationCondition.robust_feasible
+        )
+
+    @parameterized.expand([[True], [False]])
+    @unittest.skipUnless(ipopt_available, "IPOPT is not available")
+    def test_pyros_only_state_vars(self, add_x_out_of_scope):
+        """
+        Test PyROS solver successfully operates on a model with
+        no first-stage variables or second-stage variables in
+        the problem scope.
+        """
+        mdl = ConcreteModel()
+        mdl.q = Param(initialize=0.5, mutable=True)
+        if add_x_out_of_scope:
+            mdl.x = Var(bounds=[1, 2])
+        mdl.y = Var(initialize=0.5)
+        mdl.eq = Constraint(expr=mdl.y == mdl.q)
+        mdl.obj = Objective(expr=mdl.y)
+
+        # prepare solvers
+        ipopt = SolverFactory("ipopt")
+        pyros = SolverFactory("pyros")
+
+        with LoggingIntercept(level=logging.WARNING) as LOG:
+            res = pyros.solve(
+                model=mdl,
+                # note: if 'x' was declared, then it is out of scope,
+                #       (not in active objective or constraints)
+                #       so still no DOF variables in scope
+                first_stage_variables=mdl.x if add_x_out_of_scope else [],
+                second_stage_variables=[],
+                uncertain_params=[mdl.q],
+                uncertainty_set=BoxSet([[0, 1]]),
+                local_solver=ipopt,
+                global_solver=ipopt,
+                objective_focus="worst_case",
+            )
+
+        log_msg = LOG.getvalue()
+        self.assertRegex(
+            log_msg, "NOTE: No user-provided first-stage variables or second-stage.*"
+        )
+        # need 2 iterations to satisfy epigraph constraint
+        # due to worst-case objective focus
+        self.assertEqual(res.iterations, 2)
+        self.assertAlmostEqual(res.final_objective_value, 1)
+        self.assertEqual(
+            res.pyros_termination_condition, pyrosTerminationCondition.robust_feasible
+        )
+
+    @parameterized.expand([[True], [False]])
+    @unittest.skipUnless(ipopt_available, "IPOPT is not available")
+    def test_pyros_no_vars(self, add_var_out_of_scope):
+        """
+        Test PyROS solver successfully operates on a model with
+        no variables appearing in the active model objective
+        or constraints.
+        """
+        mdl = ConcreteModel()
+        mdl.q = Param(initialize=0.5, mutable=True)
+        if add_var_out_of_scope:
+            # note: if declared, does not appear in active
+            #       objective/constraints, so out of scope
+            mdl.x = Var(bounds=[1, mdl.q])
+        mdl.obj = Objective(expr=mdl.q)
+
+        # prepare solvers
+        ipopt = SolverFactory("ipopt")
+        pyros = SolverFactory("pyros")
+
+        with LoggingIntercept(level=logging.WARNING) as LOG:
+            res = pyros.solve(
+                model=mdl,
+                first_stage_variables=[],
+                second_stage_variables=[],
+                uncertain_params=[mdl.q],
+                uncertainty_set=BoxSet([[0, 1]]),
+                local_solver=ipopt,
+                global_solver=ipopt,
+            )
+
+        log_msg = LOG.getvalue()
+        self.assertRegex(
+            log_msg,
+            "NOTE: No variables.*appear in the active model objective.*constraints",
+        )
+        self.assertEqual(res.iterations, 1)
+        self.assertAlmostEqual(res.final_objective_value, 0.5)
+        self.assertEqual(
+            res.pyros_termination_condition, pyrosTerminationCondition.robust_feasible
+        )
+
+    @unittest.skipUnless(ipopt_available, "IPOPT is not available")
+    def test_pyros_no_uncertain_params(self):
+        """
+        Test PyROS successfully operates on a model with no uncertain
+        parameters (zero-dimensional uncertainty set).
+        """
+
+        m = ConcreteModel()
+        m.x = Var(bounds=(1, 2))
+        m.z = Var(bounds=(1, 2))
+        m.y = Var(bounds=(1, 2))
+        m.obj = Objective(expr=m.x**2 + m.z**2 + m.y**2)
+
+        ipopt = SolverFactory("ipopt")
+        pyros = SolverFactory("pyros")
+
+        res = pyros.solve(
+            model=m,
+            first_stage_variables=m.x,
+            second_stage_variables=m.z,
+            uncertain_params=[],
+            uncertainty_set=ZeroDimensionalSet(),
+            local_solver=ipopt,
+            global_solver=ipopt,
+            decision_rule_order=1,
+        )
+
+        # check results
+        self.assertEqual(res.iterations, 1)
+        self.assertAlmostEqual(res.final_objective_value, 3, places=6)
+        self.assertAlmostEqual(m.x.value, 1)
+        self.assertAlmostEqual(m.z.value, 1)
+        self.assertAlmostEqual(m.y.value, 1)
+        self.assertEqual(
+            res.pyros_termination_condition, pyrosTerminationCondition.robust_feasible
+        )
+
+
 class TestPyROSSolverAdvancedValidation(unittest.TestCase):
     """
     Test PyROS solver validation routines result in
@@ -3848,35 +4041,6 @@ class TestPyROSSolverAdvancedValidation(unittest.TestCase):
                 model=mdl,
                 first_stage_variables=[mdl.x1],
                 second_stage_variables=[mdl.x2],
-                uncertain_params=[mdl.u],
-                uncertainty_set=BoxSet([[1 / 4, 2]]),
-                local_solver=local_solver,
-                global_solver=global_solver,
-            )
-
-    def test_pyros_empty_dof_vars(self):
-        """
-        Test PyROS solver raises exception raised if there are no
-        first-stage variables or second-stage variables.
-        """
-        # build model
-        mdl = self.build_simple_test_model()
-
-        # prepare solvers
-        pyros = SolverFactory("pyros")
-        local_solver = SimpleTestSolver()
-        global_solver = SimpleTestSolver()
-
-        # perform checks
-        exc_str = (
-            "Arguments `first_stage_variables` and "
-            "`second_stage_variables` are both empty lists."
-        )
-        with self.assertRaisesRegex(ValueError, exc_str):
-            pyros.solve(
-                model=mdl,
-                first_stage_variables=[],
-                second_stage_variables=[],
                 uncertain_params=[mdl.u],
                 uncertainty_set=BoxSet([[1 / 4, 2]]),
                 local_solver=local_solver,
@@ -4335,7 +4499,7 @@ class TestResolveAndValidatePyROSInputs(unittest.TestCase):
 
 
 # @SolverFactory.register("subsolver_error__solver")
-class SubsolverErrorSolver(object):
+class SubsolverErrorSolver:
     """
     Solver that returns a bad termination condition
     to purposefully create an SP subsolver error.

@@ -59,7 +59,7 @@ from pyomo.core.expr.visitor import (
 from pyomo.core.util import prod
 from pyomo.opt import SolverFactory
 import pyomo.repn.ampl as pyomo_ampl_repn
-from pyomo.repn.parameterized_quadratic import ParameterizedQuadraticRepnVisitor
+from pyomo.repn.parameterized import ParameterizedQuadraticRepnVisitor
 import pyomo.repn.plugins.nl_writer as pyomo_nl_writer
 from pyomo.repn.util import OrderedVarRecorder
 from pyomo.util.vars_from_expressions import get_vars_from_components
@@ -815,13 +815,6 @@ def validate_variable_partitioning(model, config):
         overlap, or there are no first-stage variables
         and no second-stage variables.
     """
-    # at least one DOF required
-    if not config.first_stage_variables and not config.second_stage_variables:
-        raise ValueError(
-            "Arguments `first_stage_variables` and "
-            "`second_stage_variables` are both empty lists."
-        )
-
     # ensure no overlap between DOF var sets
     overlapping_vars = ComponentSet(config.first_stage_variables) & ComponentSet(
         config.second_stage_variables
@@ -863,6 +856,22 @@ def validate_variable_partitioning(model, config):
     first_stage_vars = ComponentSet(config.first_stage_variables) & active_model_vars
     second_stage_vars = ComponentSet(config.second_stage_variables) & active_model_vars
     state_vars = active_model_vars - (first_stage_vars | second_stage_vars)
+
+    if not active_model_vars:
+        config.progress_logger.warning(
+            "NOTE: No variables declared on the user-provided model "
+            "appear in the active model objective or constraints. "
+            "PyROS will proceed with solving for the optimal objective value, "
+            "subject to the active declared constraints, "
+            "according to the user-provided options."
+        )
+    elif not (first_stage_vars or second_stage_vars):
+        config.progress_logger.warning(
+            "NOTE: No user-provided first-stage variables or second-stage variables "
+            "appear in the active model objective or constraints. "
+            "PyROS will proceed with optimizing the state variables "
+            "according to the user-provided options."
+        )
 
     return VariablePartitioning(
         list(first_stage_vars), list(second_stage_vars), list(state_vars)

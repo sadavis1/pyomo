@@ -303,7 +303,7 @@ class Param(IndexedComponent, IndexedComponent_NDArrayMixin):
     DefaultMutable = False
     _ComponentDataClass = ParamData
 
-    class NoValue(object):
+    class NoValue:
         """A dummy type that is pickle-safe that we can use as the default
         value for Params to indicate that no valid value is present."""
 
@@ -945,7 +945,7 @@ class ScalarParam(ParamData, Param):
     #
     # Since this class derives from Component and Component.__getstate__
     # just packs up the entire __dict__ into the state dict, there s
-    # nothng special that we need to do here.  We will just defer to the
+    # nothing special that we need to do here.  We will just defer to the
     # super() get/set state.  Since all of our get/set state methods
     # rely on super() to traverse the MRO, this will automatically pick
     # up both the Component and Data base classes.

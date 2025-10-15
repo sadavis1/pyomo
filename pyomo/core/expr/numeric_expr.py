@@ -13,6 +13,7 @@ import collections
 import logging
 import math
 import operator
+import sys
 
 logger = logging.getLogger('pyomo.core')
 
@@ -161,7 +162,7 @@ def enable_expression_optimizations(zero=None, one=None):
             _zero_one_optimizations.discard(key)
 
 
-class mutable_expression(object):
+class mutable_expression:
     """Context manager for mutable sums.
 
     This context manager is used to compute a sum while treating the
@@ -3771,8 +3772,10 @@ def _fcn_mutable(a, name, fcn):
 
 
 def _fcn_invalid(a, name, fcn):
-    fcn(a)
-    # returns None
+    try:
+        return a._op(fcn, a)
+    except:
+        return _invalid(str(sys.exc_info()[1]))
 
 
 def _fcn_native(a, name, fcn):
