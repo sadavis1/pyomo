@@ -1314,14 +1314,22 @@ class WellDefinedConstraintGenerator(StreamBasedExpressionVisitor):
     def exitNode(self, node, data):
         if node.__class__ in _handlers:
             for con in _handlers[node.__class__](node):
+                # note: con should never be a boolean True here, such
+                # cases were supposed to have been filtered out during
+                # the handler call
                 self.cons_list.add(con)
 
 
 # epsilon for handling function domains with strict inequalities
 EPS = 1e-4
 
+
 def _handlePowExpression(node):
     (base, exp) = node.args
+    # if base is not variable, nothing for us to do
+    if base.__class__ in EXPR.native_types or not base.is_potentially_variable():
+        return ()
+
     # If exp is a NPV nonnegative integer, there are no restrictions on
     # base. If exp is a NPV negative integer, base should not be
     # zero. If exp is a NPV nonnegative fraction, base should not be
@@ -1384,7 +1392,6 @@ _handlers = {
     # Note: we will skip all the NPV expression types, since if one
     # of those fails to be well-defined, changing variable values is
     # not going to fix it
-    
     # You're on your own here
     # EXPR.ExternalFunctionExpression,
     EXPR.PowExpression: _handlePowExpression,
