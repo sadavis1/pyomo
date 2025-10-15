@@ -11,6 +11,13 @@
 
 import pyomo.common.unittest as unittest
 from pyomo.common.dependencies import attempt_import
+from pyomo.common.dependencies import numpy as np, numpy_available
+
+from pyomo.contrib.solver.tests.solvers.gurobi_to_pyomo_expressions import (
+    grb_nl_to_pyo_expr,
+)
+from pyomo.core.expr.compare import assertExpressionsEqual
+from pyomo.core.expr.numeric_expr import SumExpression, ProductExpression
 from pyomo.environ import (
     Binary,
     BooleanVar,
@@ -31,17 +38,15 @@ from pyomo.environ import (
     value,
     Var,
 )
+from pyomo.gdp import Disjunction
 from pyomo.opt import WriterFactory
-from pyomo.contrib.gurobi_minlp.repn.gurobi_direct_minlp import (
-    GurobiMINLPSolver,
+from pyomo.contrib.solver.solvers.gurobi_direct_minlp import (
+    GurobiDirectMINLP,
     GurobiMINLPVisitor,
 )
 from pyomo.contrib.solver.common.factory import SolverFactory
 from pyomo.contrib.solver.common.results import TerminationCondition
-from pyomo.contrib.gurobi_minlp.tests.test_gurobi_minlp_walker import CommonTest
-
-## DEBUG
-from pytest import set_trace
+from pyomo.contrib.solver.tests.solvers.test_gurobi_minlp_walker import CommonTest
 
 gurobipy, gurobipy_available = attempt_import('gurobipy', minimum_version='12.0.0')
 if gurobipy_available:
@@ -75,9 +80,9 @@ class TestGurobiMINLPWriter(CommonTest):
 
         m = make_model()
 
-        grb_model, var_map, obj = WriterFactory('gurobi_minlp').write(
-            m, symbolic_solver_labels=True
-        )
+        grb_model, var_map, obj, grb_cons, pyo_cons = WriterFactory(
+            'gurobi_minlp'
+        ).write(m, symbolic_solver_labels=True)
 
         self.assertEqual(len(var_map), 7)
         x1 = var_map[id(m.x1)]
@@ -187,9 +192,9 @@ class TestGurobiMINLPWriter(CommonTest):
         m.c = Constraint(expr=-m.x1 == m.p1)
         m.obj = Objective(expr=m.x1)
 
-        grb_model, var_map, obj = WriterFactory('gurobi_minlp').write(
-            m, symbolic_solver_labels=True
-        )
+        grb_model, var_map, obj, grb_cons, pyo_cons = WriterFactory(
+            'gurobi_minlp'
+        ).write(m, symbolic_solver_labels=True)
 
         self.assertEqual(len(var_map), 1)
         x1 = var_map[id(m.x1)]
@@ -233,9 +238,9 @@ class TestGurobiMINLPWriter(CommonTest):
         m.whatever = LogicalConstraint(expr=~m.b)
         m.whatever.deactivate()
 
-        grb_model, var_map, obj = WriterFactory('gurobi_minlp').write(
-            m, symbolic_solver_labels=True
-        )
+        grb_model, var_map, obj, grb_cons, pyo_cons = WriterFactory(
+            'gurobi_minlp'
+        ).write(m, symbolic_solver_labels=True)
 
         self.assertEqual(len(var_map), 1)
         x1 = var_map[id(m.x1)]
@@ -268,7 +273,7 @@ class TestGurobiMINLPWriter(CommonTest):
         self.assertEqual(obj.getCoeff(0), 1)
         self.assertIs(obj.getVar(0), x1)
 
-    def test_named_expressions(self):
+    def test_named_expression_quadratic(self):
         m = ConcreteModel()
         m.x = Var()
         m.y = Var()
@@ -277,9 +282,9 @@ class TestGurobiMINLPWriter(CommonTest):
         m.c2 = Constraint(expr=m.e >= -3)
         m.obj = Objective(expr=0)
 
-        grb_model, var_map, obj = WriterFactory('gurobi_minlp').write(
-            m, symbolic_solver_labels=True
-        )
+        grb_model, var_map, obj, grb_cons, pyo_cons = WriterFactory(
+            'gurobi_minlp'
+        ).write(m, symbolic_solver_labels=True)
 
         self.assertEqual(len(var_map), 2)
         x = var_map[id(m.x)]
@@ -331,6 +336,84 @@ class TestGurobiMINLPWriter(CommonTest):
         obj = grb_model.getObjective()
         self.assertEqual(obj.size(), 0)
 
+    def test_named_expression_nonlinear(self):
+        m = ConcreteModel()
+        m.x = Var()
+        m.y = Var()
+        m.e = Expression(expr=log(m.x) ** 2 + m.y)
+        m.c = Constraint(expr=m.e <= 7)
+        m.c2 = Constraint(expr=m.e + m.y**3 + log(m.x + m.y) >= -3)
+        m.obj = Objective(expr=0)
+
+        grb_model, var_map, obj, grb_cons, pyo_cons = WriterFactory(
+            'gurobi_minlp'
+        ).write(m, symbolic_solver_labels=True)
+
+        self.assertEqual(len(var_map), 2)
+        x = var_map[id(m.x)]
+        y = var_map[id(m.y)]
+        reverse_var_map = {grbv: pyov for pyov, grbv in var_map.items()}
+
+        self.assertEqual(grb_model.numVars, 4)
+        self.assertEqual(grb_model.numIntVars, 0)
+        self.assertEqual(grb_model.numBinVars, 0)
+
+        lin_constrs = grb_model.getConstrs()
+        self.assertEqual(len(lin_constrs), 2)
+        quad_constrs = grb_model.getQConstrs()
+        self.assertEqual(len(quad_constrs), 0)
+        nonlinear_constrs = grb_model.getGenConstrs()
+        self.assertEqual(len(nonlinear_constrs), 2)
+
+        c1 = lin_constrs[0]
+        aux1 = grb_model.getRow(c1)
+        self.assertEqual(c1.RHS, 7)
+        self.assertEqual(c1.Sense, '<')
+        self.assertEqual(aux1.size(), 1)
+        self.assertEqual(aux1.getCoeff(0), 1)
+        self.assertEqual(aux1.getConstant(), 0)
+        aux1 = aux1.getVar(0)
+
+        c2 = lin_constrs[1]
+        aux2 = grb_model.getRow(c2)
+        self.assertEqual(c2.RHS, -3)
+        self.assertEqual(c2.Sense, '>')
+        self.assertEqual(aux2.size(), 1)
+        self.assertEqual(aux2.getCoeff(0), 1)
+        self.assertEqual(aux2.getConstant(), 0)
+        aux2 = aux2.getVar(0)
+
+        # log(x)**2 + y
+        g1 = nonlinear_constrs[0]
+        aux_var, opcode, data, parent = grb_model.getGenConstrNLAdv(g1)
+        self.assertIs(aux_var, aux1)
+        assertExpressionsEqual(
+            self,
+            grb_nl_to_pyo_expr(opcode, data, parent, reverse_var_map),
+            log(m.x) ** 2 + m.y,
+        )
+
+        # log(x)**2 + y + y**3 + log(x + y)
+        g2 = nonlinear_constrs[1]
+        aux_var, opcode, data, parent = grb_model.getGenConstrNLAdv(g2)
+        self.assertIs(aux_var, aux2)
+        pyo_expr = grb_nl_to_pyo_expr(opcode, data, parent, reverse_var_map)
+        assertExpressionsEqual(
+            self,
+            pyo_expr,
+            SumExpression(
+                (
+                    SumExpression((SumExpression((log(m.x) ** 2, m.y)), m.y**3.0)),
+                    log(SumExpression((m.x, m.y))),
+                )
+            ),
+        )
+
+        # objective
+        self.assertEqual(grb_model.ModelSense, 1)  # minimizing
+        obj = grb_model.getObjective()
+        self.assertEqual(obj.size(), 0)
+
     def test_solve_model(self):
         m = ConcreteModel()
         m.x = Var(bounds=(0, 1))
@@ -338,18 +421,22 @@ class TestGurobiMINLPWriter(CommonTest):
         m.c = Constraint(expr=m.y == m.x**2)
         m.obj = Objective(expr=m.x + m.y, sense=maximize)
 
-        results = SolverFactory('gurobi_direct_minlp').solve(m)
+        results = SolverFactory('gurobi_direct_minlp').solve(m, tee=True)
 
         self.assertEqual(value(m.obj.expr), 2)
 
         self.assertEqual(value(m.x), 1)
         self.assertEqual(value(m.y), 1)
 
+        self.assertEqual(
+            results.termination_condition,
+            TerminationCondition.convergenceCriteriaSatisfied,
+        )
         self.assertEqual(results.incumbent_objective, 2)
         self.assertEqual(results.objective_bound, 2)
 
-    def test_unbounded_because_of_multplying_by_0(self):
-        # Gurobi belives that the expression in m.c is nonlinear, so we have
+    def test_unbounded_because_of_multiplying_by_0(self):
+        # Gurobi believes that the expression in m.c is nonlinear, so we have
         # to pass it that way for this to work. Because this is in fact an
         # unbounded model.
 
@@ -360,9 +447,9 @@ class TestGurobiMINLPWriter(CommonTest):
         m.c = Constraint(expr=(0 * m.x1 * m.x2) * m.x3 == 0)
         m.obj = Objective(expr=m.x1)
 
-        grb_model, var_map, obj = WriterFactory('gurobi_minlp').write(
-            m, symbolic_solver_labels=True
-        )
+        grb_model, var_map, obj, grb_cons, pyo_cons = WriterFactory(
+            'gurobi_minlp'
+        ).write(m, symbolic_solver_labels=True)
 
         self.assertEqual(len(var_map), 3)
         x1 = var_map[id(m.x1)]
@@ -395,46 +482,23 @@ class TestGurobiMINLPWriter(CommonTest):
         res_var, opcode, data, parent = grb_model.getGenConstrNLAdv(c)
         # This is where we link into the linear inequality constraint
         self.assertIs(res_var, aux_var)
+        reverse_var_map = {grb_v: pyo_v for pyo_v, grb_v in var_map.items()}
+        pyo_expr = grb_nl_to_pyo_expr(opcode, data, parent, reverse_var_map)
 
-        self.assertEqual(len(opcode), 6)
-        self.assertEqual(parent[0], -1) # root
-        self.assertEqual(opcode[0], GRB.OPCODE_MULTIPLY)
-        self.assertEqual(data[0], -1) # no additional data
+        assertExpressionsEqual(
+            self,
+            pyo_expr,
+            ProductExpression((ProductExpression((0.0, m.x1, m.x2, m.x3)),)),
+        )
 
-        # first arg is another multiply with three children
-        self.assertEqual(parent[1], 0)
-        self.assertEqual(opcode[1], GRB.OPCODE_MULTIPLY)
-        self.assertEqual(data[0], -1)
-
-        # second arg is the constant
-        self.assertEqual(parent[2], 1)
-        self.assertEqual(opcode[2], GRB.OPCODE_CONSTANT)
-        self.assertEqual(data[2], 0)
-
-        # third arg is x1
-        self.assertEqual(parent[3], 1)
-        self.assertEqual(opcode[3], GRB.OPCODE_VARIABLE)
-        self.assertIs(data[3], x1)
-
-        # fourth arg is x2
-        self.assertEqual(parent[4], 1)
-        self.assertEqual(opcode[4], GRB.OPCODE_VARIABLE)
-        self.assertIs(data[4], x2)
-
-        # fifth arg is x3, whose parent is the root
-        self.assertEqual(parent[5], 0)
-        self.assertEqual(opcode[5], GRB.OPCODE_VARIABLE)
-        self.assertIs(data[5], x3)
-        
         opt = SolverFactory('gurobi_direct_minlp')
         opt.config.raise_exception_on_nonoptimal_result = False
         results = opt.solve(m)
         # model is unbounded
         self.assertEqual(results.termination_condition, TerminationCondition.unbounded)
-        
-    def test_soren_example2(self):
-        import numpy as np
 
+    @unittest.skipUnless(numpy_available, "Numpy is not available")
+    def test_numpy_trivially_true_constraint(self):
         m = ConcreteModel()
         m.x1 = Var()
         m.x2 = Var()
@@ -442,10 +506,65 @@ class TestGurobiMINLPWriter(CommonTest):
         m.x2.fix(np.float64(0))
         m.c = Constraint(expr=m.x1 == m.x2)
         m.obj = Objective(expr=m.x1)
-        m.pprint()
         results = SolverFactory('gurobi_direct_minlp').solve(m)
-        results.display()
 
+        self.assertEqual(
+            results.termination_condition,
+            TerminationCondition.convergenceCriteriaSatisfied,
+        )
+        self.assertEqual(value(m.obj), 0)
+        self.assertEqual(results.incumbent_objective, 0)
+        self.assertEqual(results.objective_bound, 0)
 
-# ESJ: Note: It appears they don't allow x1 ** x2...?  Well, they wait and give the
-# error in the solver log, so not sure what we want to do about that?
+    def test_trivially_true_constraint(self):
+        """
+        We can pass trivially true things to Gurobi and it's fine
+        """
+        m = ConcreteModel()
+        m.x1 = Var()
+        m.x2 = Var()
+        m.x1.fix(2)
+        m.x2.fix(2)
+        m.c = Constraint(expr=m.x1 <= m.x2)
+        m.obj = Objective(expr=m.x1)
+        results = SolverFactory('gurobi_direct_minlp').solve(m, tee=True)
+
+        self.assertEqual(
+            results.termination_condition,
+            TerminationCondition.convergenceCriteriaSatisfied,
+        )
+        self.assertEqual(value(m.obj), 2)
+        self.assertEqual(results.incumbent_objective, 2)
+        self.assertEqual(results.objective_bound, 2)
+
+    def test_multiple_objective_error(self):
+        m = make_model()
+        m.obj2 = Objective(expr=m.x1 + m.x2)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "More than one active objective defined for input model 'unknown': "
+            "Cannot write to gurobipy",
+        ):
+            results = SolverFactory('gurobi_direct_minlp').solve(m)
+
+    def test_unrecognized_component_error(self):
+        m = make_model()
+        m.disj = Disjunction(expr=[[m.x1 + m.x2 == 3], [m.x1 + m.x2 >= 7]])
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"The model \('unknown'\) contains the following active components "
+            r"that the Gurobi MINLP writer does not know how to process:"
+            + "\n\t"
+            + r"\<class 'pyomo.gdp.disjunct.Disjunct'\>:"
+            + "\n\t\t"
+            + r"disj_disjuncts\[0\]"
+            + "\n\t\t"
+            + r"disj_disjuncts\[1\]"
+            + "\n\t"
+            + r"<class 'pyomo.gdp.disjunct.Disjunction'>:"
+            + "\n\t\t"
+            + "disj",
+        ):
+            results = SolverFactory('gurobi_direct_minlp').solve(m)
