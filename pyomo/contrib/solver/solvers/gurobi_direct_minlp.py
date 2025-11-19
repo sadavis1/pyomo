@@ -1,7 +1,7 @@
 #  ___________________________________________________________________________
 #
 #  Pyomo: Python Optimization Modeling Objects
-#  Copyright (c) 2008-2024
+#  Copyright (c) 2008-2025
 #  National Technology and Engineering Solutions of Sandia, LLC
 #  Under the terms of Contract DE-NA0003525 with National Technology and
 #  Engineering Solutions of Sandia, LLC, the U.S. Government retains certain
@@ -76,9 +76,9 @@ from pyomo.repn.util import (
     BeforeChildDispatcher,
     complex_number_error,
     initialize_exit_node_dispatcher,
-    InvalidNumber,
     nan,
     OrderedVarRecorder,
+    check_constant,
 )
 
 import sys
@@ -97,21 +97,20 @@ _QUADRATIC = ExprType.QUADRATIC
 _VARIABLE = ExprType.VARIABLE
 
 _function_map = {}
-_domain_map = ComponentMap()
 
-gurobipy, gurobipy_available = attempt_import('gurobipy', minimum_version='12.0.0')
-if gurobipy_available:
-    from gurobipy import GRB, nlfunc
 
+def _finalize_gurobipy(gurobipy, available):
+    if not available:
+        return
     _function_map.update(
         {
-            'exp': (_GENERAL, nlfunc.exp),
-            'log': (_GENERAL, nlfunc.log),
-            'log10': (_GENERAL, nlfunc.log10),
-            'sin': (_GENERAL, nlfunc.sin),
-            'cos': (_GENERAL, nlfunc.cos),
-            'tan': (_GENERAL, nlfunc.tan),
-            'sqrt': (_GENERAL, nlfunc.sqrt),
+            'exp': (_GENERAL, gurobipy.nlfunc.exp),
+            'log': (_GENERAL, gurobipy.nlfunc.log),
+            'log10': (_GENERAL, gurobipy.nlfunc.log10),
+            'sin': (_GENERAL, gurobipy.nlfunc.sin),
+            'cos': (_GENERAL, gurobipy.nlfunc.cos),
+            'tan': (_GENERAL, gurobipy.nlfunc.tan),
+            'sqrt': (_GENERAL, gurobipy.nlfunc.sqrt),
             # Not supporting any of these right now--we'd have to build them from the
             # above:
             # 'asin': None,
@@ -128,17 +127,14 @@ if gurobipy_available:
         }
     )
 
-    _domain_map.update(
-        (
-            (Binary, (GRB.BINARY, -float('inf'), float('inf'))),
-            (Integers, (GRB.INTEGER, -float('inf'), float('inf'))),
-            (NonNegativeIntegers, (GRB.INTEGER, 0, float('inf'))),
-            (NonPositiveIntegers, (GRB.INTEGER, -float('inf'), 0)),
-            (NonNegativeReals, (GRB.CONTINUOUS, 0, float('inf'))),
-            (NonPositiveReals, (GRB.CONTINUOUS, -float('inf'), 0)),
-            (Reals, (GRB.CONTINUOUS, -float('inf'), float('inf'))),
-        )
-    )
+
+gurobipy, gurobipy_available = attempt_import(
+    'gurobipy',
+    deferred_submodules=['GRB'],
+    callback=_finalize_gurobipy,
+    minimum_version='12.0.0',
+)
+GRB = gurobipy.GRB
 
 
 """
@@ -162,14 +158,23 @@ exception rather than the rule, so we will let Gurobi expand the expressions for
 
 def _create_grb_var(visitor, pyomo_var, name=""):
     pyo_domain = pyomo_var.domain
-    if pyo_domain in _domain_map:
-        domain, domain_lb, domain_ub = _domain_map[pyo_domain]
-    else:
+    domain_lb, domain_ub, domain = pyo_domain.get_interval()
+    if domain not in (0, 1):
         raise ValueError(
-            "Unsupported domain for Var '%s': %s" % (pyomo_var.name, pyo_domain)
+            "Unsupported domain for Var '%s': %s" % (pyomo_var.name, pyomo_var.domain)
         )
-    lb = max(domain_lb, pyomo_var.lb) if pyomo_var.lb is not None else domain_lb
-    ub = min(domain_ub, pyomo_var.ub) if pyomo_var.ub is not None else domain_ub
+    domain = GRB.INTEGER if domain else GRB.CONTINUOUS
+    # We set binaries to be binary right now because we don't know if Gurbi cares
+    if pyo_domain is Binary:
+        domain = GRB.BINARY
+
+    # returns tigter of bounds from domain and bounds set on variable
+    lb, ub = pyomo_var.bounds
+    if lb is None:
+        lb = -float("inf")
+    if ub is None:
+        ub = float("inf")
+
     return visitor.grb_model.addVar(lb=lb, ub=ub, vtype=domain, name=name)
 
 
@@ -178,9 +183,7 @@ class GurobiMINLPBeforeChildDispatcher(BeforeChildDispatcher):
     def _before_var(visitor, child):
         if child not in visitor.var_map:
             if child.fixed:
-                # ESJ TODO: I want the linear walker implementation of
-                # check_constant... Could it be in the base class or something?
-                return False, (_CONSTANT, visitor.check_constant(child.value, child))
+                return False, (_CONSTANT, check_constant(child.value, child, visitor))
             grb_var = _create_grb_var(
                 visitor,
                 child,
@@ -239,8 +242,8 @@ def _handle_node_with_eval_expr_visitor_quadratic(visitor, node, *data):
 
 
 def _handle_node_with_eval_expr_visitor_nonlinear(visitor, node, *data):
-    # ESJ: _apply_operation for DivisionExpression expects that result is indexed, so
-    # I'm making it a tuple rather than a map.
+    # ESJ: _apply_operation for DivisionExpression expects that result
+    # supports __getitem__, so I'm expanding the map to a tuple.
     return (
         _GENERAL,
         visitor._eval_expr_visitor.visit(node, tuple(map(itemgetter(1), data))),
@@ -413,40 +416,6 @@ class GurobiMINLPVisitor(StreamBasedExpressionVisitor):
     def finalizeResult(self, result):
         return result
 
-    # ESJ TODO: THIS IS COPIED FROM THE LINEAR WALKER--CAN WE PUT IT IN UTIL OR
-    # SOMETHING?
-    def check_constant(self, ans, obj):
-        if ans.__class__ not in EXPR.native_numeric_types:
-            # None can be returned from uninitialized Var/Param objects
-            if ans is None:
-                return InvalidNumber(
-                    None, f"'{obj}' evaluated to a nonnumeric value '{ans}'"
-                )
-            if ans.__class__ is InvalidNumber:
-                return ans
-            elif ans.__class__ in native_complex_types:
-                return complex_number_error(ans, self, obj)
-            else:
-                # It is possible to get other non-numeric types.  Most
-                # common are bool and 1-element numpy.array().  We will
-                # attempt to convert the value to a float before
-                # proceeding.
-                #
-                # TODO: we should check bool and warn/error (while bool is
-                # convertible to float in Python, they have very
-                # different semantic meanings in Pyomo).
-                try:
-                    ans = float(ans)
-                except:
-                    return InvalidNumber(
-                        ans, f"'{obj}' evaluated to a nonnumeric value '{ans}'"
-                    )
-        if ans != ans:
-            return InvalidNumber(
-                nan, f"'{obj}' evaluated to a nonnumeric value '{ans}'"
-            )
-        return ans
-
 
 @WriterFactory.register(
     'gurobi_minlp',
@@ -508,8 +477,11 @@ class GurobiMINLPWriter:
                 % (
                     model.name,
                     "\n\t".join(
-                        "%s:\n\t\t%s" % (k, "\n\t\t".join(map(attrgetter('name'), v)))
-                        for k, v in unknown.items()
+                        sorted(
+                            "%s:\n\t\t%s"
+                            % (k, "\n\t\t".join(sorted(map(attrgetter('name'), v))))
+                            for k, v in unknown.items()
+                        )
                     ),
                 )
             )
@@ -593,7 +565,7 @@ class GurobiMINLPWriter:
                         grb_cons.append(grb_model.addConstr(expr == lb))
                         pyo_cons.append(cons)
                     else:
-                        # TODO: should be have special handling if expr is a
+                        # TODO: should we have special handling if expr is a
                         # GRB.LinExpr so that we can use the ranged linear
                         # constraint syntax (expr == [lb, ub])?
                         if lb is not None:
