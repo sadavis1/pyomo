@@ -2255,6 +2255,7 @@ class TestErrors(unittest.TestCase):
         relaxed_xor = hull.get_transformed_constraints(
             m.disjunction_disjuncts[0].nestedDisjunction.algebraic_constraint
         )
+
         self.assertEqual(len(relaxed_xor), 1)
         relaxed_xor = relaxed_xor[0]
         repn = generate_standard_repn(relaxed_xor.body)
@@ -2661,10 +2662,7 @@ class LogicalConstraintsOnDisjuncts(unittest.TestCase):
         c = cons[0]
         # hull transformation of z1 >= 1
         assertExpressionsStructurallyEqual(
-            self,
-            c.expr,
-            dis_z1 - (1 - m.d[1].binary_indicator_var) * 0
-            >= m.d[1].binary_indicator_var,
+            self, c.expr, dis_z1 >= m.d[1].binary_indicator_var
         )
 
         # then d[4]:
@@ -2834,10 +2832,7 @@ class LogicalConstraintsOnDisjuncts(unittest.TestCase):
         self.assertEqual(len(cons), 1)
         cons = cons[0]
         assertExpressionsStructurallyEqual(
-            self,
-            cons.expr,
-            1 - z3d - (2 - (z1d + z2d)) - (1 - m.d[4].binary_indicator_var) * (-1)
-            <= 0 * m.d[4].binary_indicator_var,
+            self, cons.expr, -z3d + z1d + z2d <= m.d[4].binary_indicator_var
         )
 
         # hull transformation of z3 >= 1
@@ -2847,9 +2842,7 @@ class LogicalConstraintsOnDisjuncts(unittest.TestCase):
         self.assertEqual(len(cons), 1)
         cons = cons[0]
         assertExpressionsStructurallyEqual(
-            self,
-            cons.expr,
-            z3d - (1 - m.d[4].binary_indicator_var) * 0 >= m.d[4].binary_indicator_var,
+            self, cons.expr, z3d >= m.d[4].binary_indicator_var
         )
 
         self.assertFalse(m.bwahaha.active)
@@ -2883,6 +2876,61 @@ class LogicalConstraintsOnDisjuncts(unittest.TestCase):
         finally:
             sys.setrecursionlimit(rl)
 
+
+class DomainRestrictionTest(unittest.TestCase):
+    def test_simple_case(self):
+        m = models.makeTwoTermDisj()
+        m.d[0].nonlinear = Constraint(expr=log(m.x - 1) >= 0)
+        TransformationFactory('gdp.hull').apply_to(m)
+        # did not throw
+        #
+        # TODO: keep on the model somewhere what x0 was, and assert it
+        # has a nonzero element
+
+    def test_handle_fixed_disagg(self):
+        m = models.makeTwoTermDisj()
+        m.d[0].nonlinear = Constraint(expr=log(m.x - 1) >= 0)
+        m.x.fix(2)
+        TransformationFactory('gdp.hull').apply_to(m, assume_fixed_vars_permanent=False)
+        # TODO: assert x0 has a key for m.x
+
+    def test_handle_fixed_no_disagg(self):
+        m = models.makeTwoTermDisj()
+        m.d[0].nonlinear = Constraint(expr=log(m.x - 1) >= 0)
+        m.x.fix(2)
+        TransformationFactory('gdp.hull').apply_to(m, assume_fixed_vars_permanent=True)
+        # TODO: assert x0 does not have a key for m.x, also the
+        # transformed constraint here should be trivial
+
+    def test_well_defined_points_arg(self):
+        m = models.makeTwoTermDisj()
+        m.d[0].nonlinear = Constraint(expr=log(m.x - 1) >= 0)
+        TransformationFactory('gdp.hull').apply_to(m)
+        # did not throw
+        #
+        # TODO: check that well_defined_points is what is should be then
+        # redo by passing it
+
+    def test_no_good_point(self):
+        m = models.makeTwoTermDisj()
+        m.d[0].nonlinear = Constraint(expr=log(-(m.x)**2 - 1) >= 0)
+        self.assertRaisesRegex(
+            GDP_Error,
+            "Unable to find a well-defined point on disjunction .*",
+            TransformationFactory('gdp.hull').apply_to,
+            m,
+        )
+
+    def test_various_nonlinear(self):
+        m = models.makeTwoTermDisj()
+        m.y = Var(bounds=(-5, 5))
+        m.d[0].log = Constraint(expr=log(m.y + 1) >= 0)
+        m.d[0].pow = Constraint(expr=m.y ** (-0.5) >= 0)
+        m.d[0].div = Constraint(expr=1 / (1 - m.y) >= 0)
+        TransformationFactory('gdp.hull').apply_to(m)
+        # did not throw
+        # TODO check that I properly handled the ill-defined stuff
+    
 
 @unittest.skipUnless(gurobi_available, "Gurobi is not available")
 class NestedDisjunctsInFlatGDP(unittest.TestCase):
