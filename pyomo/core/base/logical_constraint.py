@@ -309,7 +309,7 @@ class LogicalConstraint(ActiveIndexedComponent):
                 ("Index", self._index_set if self.is_indexed() else None),
                 ("Active", self.active),
             ],
-            self.items(),
+            self.items,
             ("Body", "Active"),
             lambda k, v: [v.body, v.active],
         )
@@ -447,7 +447,7 @@ class LogicalConstraintList(IndexedLogicalConstraint):
     added an index value is not specified.
     """
 
-    class End(object):
+    class End:
         pass
 
     def __init__(self, **kwargs):

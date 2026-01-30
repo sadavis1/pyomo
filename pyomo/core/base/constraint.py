@@ -57,7 +57,6 @@ from pyomo.core.base.initializer import (
     CountedCallInitializer,
 )
 
-
 logger = logging.getLogger('pyomo.core')
 
 TEMPLATIZE_CONSTRAINTS = False
@@ -538,7 +537,7 @@ class _GeneralConstraintData(metaclass=RenamedClass):
     __renamed__version__ = '6.7.2'
 
 
-class TemplateDataMixin(object):
+class TemplateDataMixin:
     __slots__ = ()
 
     @property
@@ -639,15 +638,15 @@ class Constraint(ActiveIndexedComponent):
     Satisfied = Feasible
 
     @overload
-    def __new__(
-        cls: Type[Constraint], *args, **kwds
-    ) -> Union[ScalarConstraint, IndexedConstraint]: ...
-
-    @overload
     def __new__(cls: Type[ScalarConstraint], *args, **kwds) -> ScalarConstraint: ...
 
     @overload
     def __new__(cls: Type[IndexedConstraint], *args, **kwds) -> IndexedConstraint: ...
+
+    @overload
+    def __new__(
+        cls: Type[Constraint], *args, **kwds
+    ) -> Union[ScalarConstraint, IndexedConstraint]: ...
 
     def __new__(cls, *args, **kwds):
         if cls != Constraint:
@@ -766,7 +765,7 @@ class Constraint(ActiveIndexedComponent):
                 ("Index", self._index_set if self.is_indexed() else None),
                 ("Active", self.active),
             ],
-            self.items(),
+            self.items,
             ("Lower", "Body", "Upper", "Active"),
             lambda k, v: [
                 "-Inf" if v.lower is None else v.lower,
@@ -1008,7 +1007,7 @@ class ConstraintList(IndexedConstraint):
     added an index value is not specified.
     """
 
-    class End(object):
+    class End:
         pass
 
     def __init__(self, **kwargs):

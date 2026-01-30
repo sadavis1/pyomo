@@ -747,7 +747,7 @@ def _kaug_FIM(experiment, obj_function, theta_vals, solver, tee, estimated_var=N
     return FIM
 
 
-class Estimator(object):
+class Estimator:
     """
     Parameter estimation class
 
@@ -1048,7 +1048,7 @@ class Estimator(object):
                 for nd_name, Var, sol_val in ef_nonants(ef):
                     ind_vars.append(Var)
                 # calculate the reduced hessian
-                (solve_result, inv_red_hes) = (
+                solve_result, inv_red_hes = (
                     inverse_reduced_hessian.inv_reduced_hessian_barrier(
                         self.ef_instance,
                         independent_variables=ind_vars,
@@ -1191,7 +1191,7 @@ class Estimator(object):
             for nd_name, Var, sol_val in ef_nonants(self.ef_instance):
                 ind_vars.append(Var)
             # calculate the reduced hessian
-            (solve_result, inv_red_hes) = (
+            solve_result, inv_red_hes = (
                 inverse_reduced_hessian.inv_reduced_hessian_barrier(
                     self.ef_instance,
                     independent_variables=ind_vars,
@@ -1486,7 +1486,7 @@ class Estimator(object):
                 if self.diagnostic_mode:
                     print('      Experiment = ', snum)
                     print('     First solve with special diagnostics wrapper')
-                    (status_obj, solved, iters, time, regu) = (
+                    status_obj, solved, iters, time, regu = (
                         utils.ipopt_solve_with_stats(
                             instance, optimizer, max_iter=500, max_cpu_time=120
                         )
@@ -1604,11 +1604,9 @@ class Estimator(object):
 
                     attempts += 1
                     if attempts > num_samples:  # arbitrary timeout limit
-                        raise RuntimeError(
-                            """Internal error: timeout constructing
+                        raise RuntimeError("""Internal error: timeout constructing
                                            a sample, the dim of theta may be too
-                                           close to the samplesize"""
-                        )
+                                           close to the samplesize""")
 
                 samplelist.append((i, sample))
 
@@ -1657,7 +1655,7 @@ class Estimator(object):
                 "theta_est(): `calc_cov` and `cov_n` are deprecated options and "
                 "will be removed in the future. Please use the `cov_est()` function "
                 "for covariance calculation.",
-                version="6.9.4.dev0",
+                version="6.9.5",
             )
         else:
             calc_cov = False
@@ -2240,7 +2238,7 @@ def group_data(data, groupby_column_name, use_mean=None):
     return grouped_data
 
 
-class _DeprecatedSecondStageCostExpr(object):
+class _DeprecatedSecondStageCostExpr:
     """
     Class to pass objective expression into the Pyomo model
     """
@@ -2253,7 +2251,7 @@ class _DeprecatedSecondStageCostExpr(object):
         return self._ssc_function(model, self._data)
 
 
-class _DeprecatedEstimator(object):
+class _DeprecatedEstimator:
     """
     Parameter estimation class
 
@@ -2493,7 +2491,7 @@ class _DeprecatedEstimator(object):
                 for ndname, Var, solval in ef_nonants(ef):
                     ind_vars.append(Var)
                 # calculate the reduced hessian
-                (solve_result, inv_red_hes) = (
+                solve_result, inv_red_hes = (
                     inverse_reduced_hessian.inv_reduced_hessian_barrier(
                         self.ef_instance,
                         independent_variables=ind_vars,
@@ -2689,7 +2687,7 @@ class _DeprecatedEstimator(object):
                 if self.diagnostic_mode:
                     print('      Experiment = ', snum)
                     print('     First solve with special diagnostics wrapper')
-                    (status_obj, solved, iters, time, regu) = (
+                    status_obj, solved, iters, time, regu = (
                         utils.ipopt_solve_with_stats(
                             instance, optimizer, max_iter=500, max_cpu_time=120
                         )
@@ -2807,11 +2805,9 @@ class _DeprecatedEstimator(object):
 
                     attempts += 1
                     if attempts > num_samples:  # arbitrary timeout limit
-                        raise RuntimeError(
-                            """Internal error: timeout constructing
+                        raise RuntimeError("""Internal error: timeout constructing
                                            a sample, the dim of theta may be too
-                                           close to the samplesize"""
-                        )
+                                           close to the samplesize""")
 
                 samplelist.append((i, sample))
 

@@ -166,7 +166,7 @@ class _GeneralObjectiveData(metaclass=RenamedClass):
     __renamed__version__ = '6.7.2'
 
 
-class TemplateDataMixin(object):
+class TemplateDataMixin:
     __slots__ = ()
 
     @property
@@ -393,7 +393,7 @@ class Objective(ActiveIndexedComponent):
                 ("Index", self._index_set if self.is_indexed() else None),
                 ("Active", self.active),
             ],
-            self._data.items(),
+            self.items,
             ("Active", "Sense", "Expression"),
             lambda k, v: [v.active, v.sense, v.expr],
         )
@@ -562,7 +562,7 @@ class ObjectiveList(IndexedObjective):
     an index value is not specified.
     """
 
-    class End(object):
+    class End:
         pass
 
     def __init__(self, **kwargs):

@@ -57,7 +57,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-class _SignalFlush(object):
+class _SignalFlush:
     def __init__(self, ostream, handle):
         super().__setattr__('_ostream', ostream)
         super().__setattr__('_handle', handle)
@@ -77,8 +77,7 @@ class _SignalFlush(object):
             failCount = 0
             while 1:
                 try:
-                    fcn(*args)
-                    break
+                    return fcn(*args)
                 except (OSError, BlockingIOError):
                     failCount += 1
                     if failCount >= retries:
@@ -89,10 +88,12 @@ class _SignalFlush(object):
             self._retry(self._ostream.flush)
             self._handle.flush = True
 
-        def write(self, data):
+        def write(self, data: str) -> int:
+            ans = 0
             chunksize = _pipe_buffersize >> 1  # 1/2 the buffer size
             for i in range(0, len(data), chunksize):
-                self._retry(self._ostream.write, data[i : i + chunksize])
+                ans += self._retry(self._ostream.write, data[i : i + chunksize])
+            return ans
 
         def writelines(self, data):
             for line in data:
@@ -116,9 +117,10 @@ class _AutoFlush(_SignalFlush):
         # Because we define write() and writelines() under windows, we
         # need to make sure that _AutoFlush calls them
 
-        def write(self, data):
-            super().write(data)
+        def write(self, data: str) -> int:
+            ans = super().write(data)
             self.flush()
+            return ans
 
         def writelines(self, data):
             super().writelines(data)
@@ -126,16 +128,17 @@ class _AutoFlush(_SignalFlush):
 
     else:
 
-        def write(self, data):
-            self._ostream.write(data)
+        def write(self, data: str) -> int:
+            ans = self._ostream.write(data)
             self.flush()
+            return ans
 
         def writelines(self, data):
             self._ostream.writelines(data)
             self.flush()
 
 
-class _fd_closer(object):
+class _fd_closer:
     """A context manager to handle closing a specified file descriptor
 
     Ideally we would use `os.fdopen(... closefd=True)`; however, it
@@ -156,7 +159,7 @@ class _fd_closer(object):
         os.close(self.fd)
 
 
-class redirect_fd(object):
+class redirect_fd:
     """Redirect a file descriptor to a new file or file descriptor.
 
     This context manager will redirect the specified file descriptor to
@@ -244,7 +247,7 @@ class redirect_fd(object):
         os.close(self.original_fd)
 
 
-class capture_output(object):
+class capture_output:
     """Context manager to capture output sent to sys.stdout and sys.stderr
 
     This is a drop-in substitute for PyUtilib's capture_output to
@@ -532,7 +535,7 @@ class capture_output(object):
         return self.__exit__(None, None, None)
 
 
-class _StreamHandle(object):
+class _StreamHandle:
     """A stream handler object used by TeeStream
 
     This handler holds the two sides of the pipe used to communicate
@@ -728,7 +731,7 @@ class _StreamHandle(object):
                 )
 
 
-class TeeStream(object):
+class TeeStream:
     def __init__(self, *ostreams, encoding=None, buffering=-1):
         self.ostreams = ostreams
         self.encoding = encoding
