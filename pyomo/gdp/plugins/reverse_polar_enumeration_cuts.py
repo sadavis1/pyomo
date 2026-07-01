@@ -8,12 +8,9 @@
 # ____________________________________________________________________________________
 
 import logging
-from pyomo.core.base import (
-    Transformation,
-    TransformationFactory,
-    ActiveComponent,
-    SubclassOf,
-)
+from pyomo.core.base import Transformation, TransformationFactory
+from pyomo.core.base.component import ActiveComponent
+from pyomo.core.base.block import SubclassOf
 from pyomo.core.util import target_list
 from pyomo.core.base.enums import SortComponents
 from pyomo.common.collections import ComponentMap, ComponentSet
@@ -21,7 +18,7 @@ from pyomo.common.config import ConfigDict, ConfigValue
 from pyomo.core import Block, Constraint
 from pyomo.gdp import Disjunct, Disjunction, GDP_Error
 from pyomo.gdp.util import get_gdp_tree
-from pyomo.repn import LinearRepnVisitor
+from pyomo.repn.linear import LinearRepnVisitor
 from pyomo.repn.util import OrderedVarRecorder
 
 
@@ -139,13 +136,13 @@ class ReversePolarEnumerationCuts(Transformation):
 
     def _generate_cuts(self, disj, tree):
         num_cuts = self._config.num_cuts
+        given_cuts = 0
 
-        # Bijectively label the vars as I find them since I need a dummy variable zero.
-        # This can probably be eliminated later
+        # Bijectively label the vars as I find them since I need a dummy variable zero. (
+        # x_0 is always treated as 1). This can probably be eliminated later
         idx_to_var = {0: None}
         var_to_idx = ComponentMap()
         coef = {}  # coef[(k, j)] = d_k^j
-        rhs = {}  # + or -1, indexed by disjuncts
         Jm = {0}  # {k | \forall t d_k^t < 0} \cup {0}
         Jp = set()  # {k | \exists t d_k^t > 0}
         disjunct_idx = 1
@@ -162,7 +159,9 @@ class ReversePolarEnumerationCuts(Transformation):
                     f"Disjunction transformed by {self.transformation_name} "
                     "must not have a nonlinear constraint."
                 )
-            # standardize form to dx >= d0, |d0| = 1
+            # standardize form to dx >= d0, d0 = 1
+            # TODO: presently we are assuming the RHS is all > 0 (for >= constraints);
+            # this will need to be eliminated later (see doc from connor)
             # note: repn.multiplier is always 1 when obtained from LinearRepnVisitor
             multiplier = 1
             if con.ub is not None:
@@ -176,12 +175,12 @@ class ReversePolarEnumerationCuts(Transformation):
                     multiplier *= -1
             else:
                 lb = con.lb - repn.constant
-            if lb == 0:
-                raise GDP_Error("TODO: can this case be handled?")
-            multiplier /= abs(lb)
-            lb /= abs(lb)
-            rhs[disjunct_idx] = lb
-            
+            if lb <= 0:
+                raise GDP_Error(
+                    "TODO: we will need to do something painful to handle this"
+                )
+            multiplier /= lb
+
             for v, c in repn.linear.items():
                 if v not in var_to_idx:
                     idx = len(idx_to_var)
@@ -189,7 +188,7 @@ class ReversePolarEnumerationCuts(Transformation):
                     var_to_idx[v] = idx
                 else:
                     idx = var_to_idx[v]
-                
+
                 if c * multiplier > 0:
                     Jp.add(idx)
                     Jm.discard(idx)
@@ -198,8 +197,36 @@ class ReversePolarEnumerationCuts(Transformation):
                         Jm.add(idx)
 
                 coef[(idx, disjunct_idx)] = c * multiplier
-                
 
             disjunct_idx += 1
 
+        # Additional preprocessing: mixed-sign lemma and sparse positive intersections
+        # lemma (from Connor)
+
+        # Mixed-sign lemma: turn certain negative numbers to zero without changing the
+        # convex hull of disjunction
+
+
+        # Sparse positive intersetions: eliminate all-negatives disjunctions (they would
+        # be empty), then 
+        
+
         # First: NEEC cut
+
+        # For now, and probably for later, we will attempt to avoid taking the logarithm;
+        # i.e., we are currently working on the set S_0^# instead of D^#
+        breakpoint()
+        alpha = {}
+        for j in Jp:
+            alpha[j] = coef[j, j]
+        for k in Jm:
+            alpha[k] = -1 * min([abs(coef[k, j]) for j in Jp])
+
+        # is this what it should be?
+        assert alpha[0] == -1
+
+        while given_cuts < num_cuts:
+            # Convert alpha to a cut and return it
+
+            # Use the auxiliary graph algorithm to proceed from alpha to alpha_next
+            return alpha
