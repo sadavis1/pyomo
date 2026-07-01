@@ -6,7 +6,7 @@ Publications
    Note to developers: For these references, we will use the package
    name followed by a description of the publication type.
 
-These publications describe various Pyomo capabilitites or subpackages:
+These publications describe various Pyomo capabilities or subpackages:
 
 .. [Pyomo-paper] William E. Hart, Jean-Paul Watson, David L. Woodruff.
    "Pyomo: modeling and solving mathematical programs in Python,"
@@ -38,6 +38,10 @@ These publications describe various Pyomo capabilitites or subpackages:
    automatic discretization framework for optimization with differential
    and algebraic equations", *Mathematical Programming Computation*, 10(2),
    187-223. 2018.
+
+.. [PyomoDOE-paper] Wang, Jialu, and Alexander W. Dowling. "Pyomo.DOE: An open‐source
+   package for model‐based design of experiments in Python", *AIChE Journal*,
+   68(12), e17813. 2022. DOI `10.1002/aic.17813 <https://doi.org/10.1002/aic.17813>`_
 
 .. [Parmest-paper] Katherine A. Klise, Bethany L. Nicholson, Andrea
    Staid, David L.Woodruff.  "Parmest: Parameter Estimation Via Pyomo."
@@ -93,6 +97,10 @@ Bibliography
    *SIAM Journal on Applied Mathematics* 23(1), 61-19, 1972.
    DOI `10.1137/0123007 <https://doi.org/10.1137/0123007>`_
 
+.. [BS04] D. Bertsimas and M. Sim. "The price of robustness",
+   *Operations research*, 52(1), 35-53, 2004. DOI
+   `10.1287/opre.1030.0065 <https://doi.org/10.1287/opre.1030.0065>`_.
+
 .. [Dje20] H. Djelassi. "Discretization-based algorithms for the
    global solution of hierarchical programs".
    Dissertation, Rheinisch-Westfälische Technische Hochschule Aachen, 2020.
@@ -133,6 +141,12 @@ Bibliography
 .. [KMT21] J. Kronqvist, R. Misener, and C. Tsay. "Between Steps:
    Intermediate Relaxations between big-M and Convex Hull
    Reformulations". 2021.  https://arxiv.org/abs/2101.12708
+
+.. [MHJ+25] M. Mundt, W. E. Hart, E. S. Johnson, B. Nicholson, and
+   J. D. Siirola. "Pyomo: Accidentally outrunning the bear", *Patterns*,
+   6(7), 101311. 2025. ISSN 2666-3899. DOI
+   `10.1016/j.patter.2025.101311
+   <https://doi.org/10.1016/j.patter.2025.101311>`_
 
 .. [NW88] G. L. Nemhauser and L. A. Wolsey. *Integer and combinatorial
    optimization*, New York: Wiley. 1988.

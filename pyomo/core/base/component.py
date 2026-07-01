@@ -1,13 +1,11 @@
-#  ___________________________________________________________________________
+# ____________________________________________________________________________________
 #
-#  Pyomo: Python Optimization Modeling Objects
-#  Copyright (c) 2008-2025
-#  National Technology and Engineering Solutions of Sandia, LLC
-#  Under the terms of Contract DE-NA0003525 with National Technology and
-#  Engineering Solutions of Sandia, LLC, the U.S. Government retains certain
-#  rights in this software.
-#  This software is distributed under the 3-clause BSD License.
-#  ___________________________________________________________________________
+# Pyomo: Python Optimization Modeling Objects
+# Copyright (c) 2008-2026 National Technology and Engineering Solutions of Sandia, LLC
+# Under the terms of Contract DE-NA0003525 with National Technology and Engineering
+# Solutions of Sandia, LLC, the U.S. Government retains certain rights in this
+# software.  This software is distributed under the 3-clause BSD License.
+# ____________________________________________________________________________________
 
 import logging
 import sys
@@ -84,11 +82,13 @@ class CloneError(pyomo.common.errors.PyomoException):
 
 
 class ComponentBase(PyomoObject):
-    """A base class for Component and ComponentData
+    """A base class for :py:class:`Component` and :py:class:`ComponentData`
 
     This class defines some fundamental methods and properties that are
     expected for all Component-like objects.  They are centralized here
-    to avoid repeated code in the Component and ComponentData classes.
+    to avoid repeated code in the :py:class:`Component` and
+    :py:class:`ComponentData` classes.
+
     """
 
     __slots__ = ()
@@ -516,7 +516,7 @@ class Component(ComponentBase):
 
         Re-constructing model components was fragile and did not
         correctly update instances of the component used in other
-        components or contexts (this was particularly problemmatic for
+        components or contexts (this was particularly problematic for
         Var, Param, and Set).  Users who wish to reproduce the old
         behavior of reconstruct(), are comfortable manipulating
         non-public interfaces, and who take the time to verify that the

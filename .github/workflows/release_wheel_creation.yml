@@ -60,7 +60,13 @@ jobs:
           os: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - name: Update README.md
+        shell: bash
+        run: |
+          # Don't use "sed -i" because sed -i requires an argument on OSX
+          sed '1,/REMOVE-EVERYTHING-BEFORE-THIS-LINE/d' README.md > README.new
+          mv README.new README.md
       - name: Build wheels
         uses: pypa/cibuildwheel@main
         with:
@@ -73,7 +79,7 @@ jobs:
             CIBW_SKIP: "*-musllinux*"
             CIBW_BUILD_VERBOSITY: 1
             CIBW_ENVIRONMENT: PYOMO_SETUP_ARGS="${{ matrix.GLOBAL_OPTIONS }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: native_wheels-${{ matrix.os }}-${{ matrix.TARGET }}
           path: dist/*.whl
@@ -105,7 +111,12 @@ jobs:
           TARGET: 'py314'
           GLOBAL_OPTIONS: "--without-cython --with-distributable-extensions"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - name: Update README.md
+        shell: bash
+        run: |
+          sed '1,/REMOVE-EVERYTHING-BEFORE-THIS-LINE/d' README.md > README.new
+          mv README.new README.md
       - name: Set up QEMU
         if: runner.os == 'Linux'
         uses: docker/setup-qemu-action@v3
@@ -121,7 +132,7 @@ jobs:
             CIBW_SKIP: "*-musllinux*"
             CIBW_BUILD_VERBOSITY: 1
             CIBW_ENVIRONMENT: PYOMO_SETUP_ARGS="${{ matrix.GLOBAL_OPTIONS }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: alt_wheels-${{ matrix.os }}-${{ matrix.TARGET }}
           path: dist/*.whl
@@ -134,9 +145,14 @@ jobs:
       matrix:
         python-version: ['3.12']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - name: Update README.md
+        shell: bash
+        run: |
+          sed '1,/REMOVE-EVERYTHING-BEFORE-THIS-LINE/d' README.md > README.new
+          mv README.new README.md
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
@@ -148,7 +164,7 @@ jobs:
           export PYOMO_SETUP_ARGS=--without-cython
           python -m build --wheel --outdir dist --config-setting="--build-option=--without-cython"
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: purepythonwheel
           path: dist/*.whl
@@ -166,9 +182,14 @@ jobs:
           TARGET: generic_tarball
         python-version: ['3.10']
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
+    - name: Update README.md
+      shell: bash
+      run: |
+        sed '1,/REMOVE-EVERYTHING-BEFORE-THIS-LINE/d' README.md > README.new
+        mv README.new README.md
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
@@ -180,7 +201,7 @@ jobs:
         export PYOMO_SETUP_ARGS=--without-cython
         python -m build --sdist --outdir dist --config-setting="--build-option=--without-cython"
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: generictarball
         path: dist
