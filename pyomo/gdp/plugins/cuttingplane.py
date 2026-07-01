@@ -55,6 +55,7 @@ from pyomo.contrib.fme.fourier_motzkin_elimination import (
     Fourier_Motzkin_Elimination_Transformation,
 )
 
+import datetime
 import logging
 
 logger = logging.getLogger('pyomo.gdp.cuttingplane')
@@ -606,8 +607,8 @@ class CuttingPlane_Transformation(Transformation):
     )
     CONFIG.declare(
         'solver_options',
-        ConfigBlock(
-            implicit=True,
+        ConfigValue(
+            # implicit=True,
             description="Dictionary of solver options",
             doc="""
         Dictionary of solver options that will be set for the solver for both the
@@ -788,6 +789,19 @@ class CuttingPlane_Transformation(Transformation):
         """,
         ),
     )
+    CONFIG.declare(
+        'time_limit',
+        ConfigValue(
+            default=0,
+            domain=NonNegativeFloat,
+            description="Quit generating cuts after this much time has passed. Only "
+            "checked after each iteration.",
+            doc="""
+        Quit generating cuts after this much time has passed. Only checked after
+        each iteration.
+        """,
+        ),
+    )
 
     def __init__(self):
         super(CuttingPlane_Transformation, self).__init__()
@@ -807,6 +821,7 @@ class CuttingPlane_Transformation(Transformation):
             else:
                 self.verbose = False
 
+            self.start_time = datetime.datetime.now()
             instance_rBigM, cuts_obj, instance_rHull, var_info, transBlockName = (
                 self._setup_subproblems(instance, bigM, self._config.tighten_relaxation)
             )
@@ -995,6 +1010,7 @@ class CuttingPlane_Transformation(Transformation):
         prev_obj = None
         epsilon = self._config.minimum_improvement_threshold
         cuts = None
+        time_limit = self._config.time_limit
 
         transBlock_rHull = instance_rHull.component(transBlockName)
 
@@ -1019,6 +1035,13 @@ class CuttingPlane_Transformation(Transformation):
         xhat = ComponentMap()
 
         while improving:
+            # check for timeout
+            elapsed = (datetime.datetime.now() - self.start_time).total_seconds()
+            if elapsed >= time_limit:
+                print(f"Cutting planes: stopping cut generation due to time ({elapsed}s elapsed against limit of {time_limit}s)")
+                break
+            print(f"Cutting planes: Running an iteration, current elapsed={elapsed}")
+            
             # solve rBigM, solution is xstar
             results = opt.solve(instance_rBigM, tee=stream_solver, load_solutions=False)
             if verify_successful_solve(results) is not NORMAL:
