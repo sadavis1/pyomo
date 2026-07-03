@@ -1004,7 +1004,7 @@ def _calc_M(constraint_name, other_disjunct_name, unsuccessful_message, is_upper
             # and then we can abandon this hack
             raise GDP_Error(unsuccessful_message)
     elif termination_condition is not TerminationCondition.optimal:
-        raise GDP_Error(unsuccessful_message)
+        raise GDP_Error(unsuccessful_message + f" (termination condition was {termination_condition}).")
     else:
         # NOTE: This transformation can be made faster by allowing the
         # solver a gap. As long as we have a bound, it's still valid
