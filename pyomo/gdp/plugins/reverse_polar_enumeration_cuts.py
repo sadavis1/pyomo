@@ -20,9 +20,13 @@ from pyomo.gdp import Disjunct, Disjunction, GDP_Error
 from pyomo.gdp.util import get_gdp_tree
 from pyomo.repn.linear import LinearRepnVisitor
 from pyomo.repn.util import OrderedVarRecorder
+from math import log, exp
+
+import networkx as nx
 
 
 logger = logging.getLogger(__name__)
+EPS = 1e-6
 
 
 @TransformationFactory.register(
@@ -134,9 +138,21 @@ class ReversePolarEnumerationCuts(Transformation):
                     f"{self.transformation_name}."
                 )
 
+            
+    def _add_cut(self, delta, disj):
+        print("here the coefficients are:")
+        for k in delta.keys():
+            print(f"delta_{k} = {delta[k]}; exp(delta_k) = {exp(delta[k])}")
+        # TODO: put it on the actual model
+
+    def _near_match(self, d1, d2):
+        for k, v in d1.items():
+            if not abs(v - d2[k]) < EPS:
+                return False
+        return True
+        
     def _generate_cuts(self, disj, tree):
         num_cuts = self._config.num_cuts
-        given_cuts = 0
 
         # Bijectively label the vars as I find them since I need a dummy variable zero. (
         # x_0 is always treated as 1). This can probably be eliminated later
@@ -200,33 +216,154 @@ class ReversePolarEnumerationCuts(Transformation):
 
             disjunct_idx += 1
 
-        # Additional preprocessing: mixed-sign lemma and sparse positive intersections
-        # lemma (from Connor)
+        # Additional preprocessing: sparse positive intersections lemma (from
+        # Connor). Eliminate all-negatives disjunctions (they would be empty), then
+        # perform various alterations to the coefficients.
+        coef_new = {}
+        for j in Jp:
+            for k in Jp:
+                if j == k:
+                    coef_new[j, j] = max([coef[j, t] for t in range(disjunct_idx)])
+                else:
+                    coef_new[k, j] = 0
+            for k in Jm:
+                coef_new[k, j] = (
+                    -min(
+                        [
+                            abs(coef[k, t]) / coef[j, t]
+                            for t in range(disjunct_idx)
+                            if coef[j, t] > 0
+                        ]
+                    )
+                    * coef_new[j, j]
+                )
 
-        # Mixed-sign lemma: turn certain negative numbers to zero without changing the
-        # convex hull of disjunction
-
-
-        # Sparse positive intersetions: eliminate all-negatives disjunctions (they would
-        # be empty), then 
-        
+        coef = coef_new
 
         # First: NEEC cut
 
-        # For now, and probably for later, we will attempt to avoid taking the logarithm;
-        # i.e., we are currently working on the set S_0^# instead of D^#
-        breakpoint()
+        # For later, we will attempt to avoid taking the logarithm;
+        # i.e., we will try to work on the set S_0^# instead of D^#
         alpha = {}
         for j in Jp:
             alpha[j] = coef[j, j]
         for k in Jm:
             alpha[k] = -1 * min([abs(coef[k, j]) for j in Jp])
 
+        breakpoint()
         # is this what it should be?
         assert alpha[0] == -1
 
-        while given_cuts < num_cuts:
-            # Convert alpha to a cut and return it
+        cost = {}
+        for j in Jp:
+            for k in Jm:
+                cost[j, k] = log(abs(coef[k, j]) / coef[j, j])
+        delta = {k: log(abs(v)) for k, v in alpha.items()}
+        # vertices already added
+        used_set = {delta}
+        # vertices to construct G_delta from
+        vertex_queue = [delta]
+        self._add_cut(delta, disj)
+        added_cuts = 1
 
-            # Use the auxiliary graph algorithm to proceed from alpha to alpha_next
-            return alpha
+        while not vertex_queue.empty() and added_cuts <= num_cuts:
+            dstar = vertex_queue.pop()
+            for cut in self._enumerate_graph_cuts(dstar, Jp, Jm, cost):
+                l = min(
+                    [
+                        cost[j, k] - dstar[k] + dstar[j]
+                        for j in Jp
+                        for k in Jm
+                        if k in cut and j not in cut
+                    ]
+                )
+                d_candidate = {k: (v + l if v in cut else v) for k, v in dstar.items()}
+                # floating point...
+                for d in used_set:
+                    if self._near_match(d_candidate, d):
+                        continue
+                vertex_queue.append(d_candidate)
+                self._add_cut(d_candidate, disj)
+                added_cuts += 1
+
+    # generator yielding graph cuts (we yield the X sets) in G_dstar
+    def _enumerate_graph_cuts(self, dstar, Jp, Jm, cost):
+        G_dstar = nx.DiGraph()
+        G_dstar.add_nodes_from(Jp)
+        G_dstar.add_nodes_from(Jm)
+        for j in Jp:
+            for k in Jm:
+                if abs(dstar[k] - dstar[j] - cost[j, k]) < EPS:
+                    G_dstar.add_edge(k, j)
+        # Ternary Booleans in honor of George Boole. True means in X,
+        # False means in X_bar, None means not yet assigned
+        for k0 in Jm:
+            if k0 == 0:
+                continue
+            label = {}
+            for i in Jm:
+                if i < k0:
+                    label[i] = False
+                elif i == k0:
+                    label[i] = True
+                else:
+                    label[i] = None
+            for i in Jp:
+                label[i] = None
+            yield from self._branch(G_dstar, label, Jp, Jm)
+        return
+
+    def _branch(self, G_dstar, label, Jp, Jm):
+        # Here we will mostly deal with G_dstar[N_0 \ X]
+        G_working = G_dstar.copy()
+        for k, v in label.items():
+            if v:
+                G_working.remove_node(k)
+        # Forcing rules necessarily put certain nodes in X
+        for k in Jm:
+            if label[k]:
+                for j in G_dstar.successors(k):
+                    label[j] = True
+        for k in Jm:
+            if label[k] is None:
+                if len(G_dstar.successors(k)) > 0:
+                    if not G_working.has_path(k, 0):
+                        label[j] = True
+
+        for j in Jp:
+            if label(j):
+                # these are in Jm only
+                for k in G_dstar.predecessors(j):
+                    if label[k] is None:
+                        if G_working.has_path(k, 0):
+                            # I will trust that this is not exponential time
+                            l1 = label.copy()
+                            l1[k] = True
+                            l2 = label.copy()
+                            l2[k] = False
+                            yield from self._branch(G_dstar, l1, Jp, Jm)
+                            yield from self._branch(G_dstar, l2, Jp, Jm)
+                            return
+                        else:
+                            l1 = label.copy()
+                            l1[k] = True
+                            yield from self._branch(G_dstar, l1, Jp, Jm)
+                            return
+        # no unassigned neighbors to any j in X intersect Jp
+        for k in label.keys():
+            if label[k] is None:
+                label[k] = False
+        found_Jm_in_X = False
+        found_Jp_in_Xbar = False
+        cut = set()
+        for k in label.keys():
+            if label[k]:
+                cut.add(k)
+                if k in Jm:
+                    found_Jm_in_X = True
+            else:
+                if k in Jp:
+                    found_Jp_in_Xbar = True
+        if found_Jm_in_X and found_Jp_in_Xbar:
+            yield cut
+        return
