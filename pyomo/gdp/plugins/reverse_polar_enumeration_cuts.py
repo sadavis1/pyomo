@@ -8,7 +8,7 @@
 # ____________________________________________________________________________________
 
 import logging
-from pyomo.core.base import Transformation, TransformationFactory
+from pyomo.core.base import Transformation, TransformationFactory, NonNegativeIntegers
 from pyomo.core.base.component import ActiveComponent
 from pyomo.core.base.block import SubclassOf
 from pyomo.core.util import target_list
@@ -63,7 +63,7 @@ class ReversePolarEnumerationCuts(Transformation):
     CONFIG.declare(
         'num_cuts',
         ConfigValue(
-            default=1,
+            default=None,
             # domain=int,
             description="number of cuts to generate",
             doc="""
@@ -112,9 +112,7 @@ class ReversePolarEnumerationCuts(Transformation):
         for t in tree.reverse_topological_sort():
             if t.ctype is Disjunction:
                 self._validate_disjunction(t, tree)
-                for cut in self._generate_cuts(t, tree):
-                    pass
-                    # TODO add cut to model in a nice way
+                self._generate_cuts(t, tree)
 
     def _validate_disjunction(self, disj, tree):
         if tree.root_disjunct(disj) is not None:
@@ -135,22 +133,33 @@ class ReversePolarEnumerationCuts(Transformation):
                 # probably an error? It's trivial in any case.
                 raise GDP_Error(
                     "Empty disjunct on disjunction transformed by "
-                    f"{self.transformation_name}."
+                    f"{self.transformation_name} - no cuts are possible."
                 )
 
-            
-    def _add_cut(self, delta, disj):
-        print("here the coefficients are:")
-        for k in delta.keys():
-            print(f"delta_{k} = {delta[k]}; exp(delta_k) = {exp(delta[k])}")
-        # TODO: put it on the actual model
+    def _add_cut(self, delta, disj, idx_to_var, var_map, Jp, Jm):
+        expr = 0
+        for k, v in delta.items():
+            if k != 0:
+                var = var_map[idx_to_var[k]]
+                if k in Jp:
+                    alpha = exp(delta[k])
+                elif k in Jm:
+                    alpha = -exp(delta[k])
+                expr += alpha * var
+        b = disj.parent_block()
+        if not hasattr(b, '_reverse_polar_enumeration_cuts'):
+            b._reverse_polar_enumeration_cuts = Constraint(NonNegativeIntegers)
+        b._reverse_polar_enumeration_cuts[len(b._reverse_polar_enumeration_cuts)] = (
+            expr >= 1
+        )
+        print(f"Added a cut: {str(expr >= 1)}")
 
     def _near_match(self, d1, d2):
         for k, v in d1.items():
             if not abs(v - d2[k]) < EPS:
                 return False
         return True
-        
+
     def _generate_cuts(self, disj, tree):
         num_cuts = self._config.num_cuts
 
@@ -158,7 +167,7 @@ class ReversePolarEnumerationCuts(Transformation):
         # x_0 is always treated as 1). This can probably be eliminated later
         idx_to_var = {0: None}
         var_to_idx = ComponentMap()
-        coef = {}  # coef[(k, j)] = d_k^j
+        coef = {}  # coef[(k, t)] = d_k^t
         Jm = {0}  # {k | \forall t d_k^t < 0} \cup {0}
         Jp = set()  # {k | \exists t d_k^t > 0}
         disjunct_idx = 1
@@ -176,8 +185,9 @@ class ReversePolarEnumerationCuts(Transformation):
                     "must not have a nonlinear constraint."
                 )
             # standardize form to dx >= d0, d0 = 1
-            # TODO: presently we are assuming the RHS is all > 0 (for >= constraints);
-            # this will need to be eliminated later (see doc from connor)
+            # NOTE: We are assuming the RHS is all > 0 (for >= constraints);
+            # this will need to be handled before passing to this transformation.
+
             # note: repn.multiplier is always 1 when obtained from LinearRepnVisitor
             multiplier = 1
             if con.ub is not None:
@@ -193,7 +203,7 @@ class ReversePolarEnumerationCuts(Transformation):
                 lb = con.lb - repn.constant
             if lb <= 0:
                 raise GDP_Error(
-                    "TODO: we will need to do something painful to handle this"
+                    "Nonpositive RHS is not valid for reverse polar cut generator."
                 )
             multiplier /= lb
 
@@ -208,7 +218,7 @@ class ReversePolarEnumerationCuts(Transformation):
                 if c * multiplier > 0:
                     Jp.add(idx)
                     Jm.discard(idx)
-                elif c * multiplier < 0:  # can this be zero?
+                elif c * multiplier < 0:  # note: possible to end up in neitheer
                     if idx not in Jp:
                         Jm.add(idx)
 
@@ -216,14 +226,25 @@ class ReversePolarEnumerationCuts(Transformation):
 
             disjunct_idx += 1
 
-        # Additional preprocessing: sparse positive intersections lemma (from
-        # Connor). Eliminate all-negatives disjunctions (they would be empty), then
-        # perform various alterations to the coefficients.
+        # Fill in dummy/default entries. Eliminate this later to save effort when sparse
+        for t in range(1, disjunct_idx):
+            coef[0, t] = 1  # or -1?
+            for j in range(1, len(idx_to_var)):
+                if (j, t) not in coef:
+                    coef[j, t] = 0
+        # Additional preprocessing (sparse positive intersections lemma
+        # from Connor): Eliminate all-negatives disjuncts (they would be
+        # empty), and perform various alterations to the
+        # coefficients. In the end d[k, t] has a block form consisting
+        # of a square diagonal matrix (possibly taller than the
+        # original, since the index of t is replaced with Jp), and below
+        # that a block of all negative values corresponding to variables
+        # in Jm.
         coef_new = {}
         for j in Jp:
             for k in Jp:
                 if j == k:
-                    coef_new[j, j] = max([coef[j, t] for t in range(disjunct_idx)])
+                    coef_new[j, j] = max([coef[j, t] for t in range(1, disjunct_idx)])
                 else:
                     coef_new[k, j] = 0
             for k in Jm:
@@ -231,15 +252,14 @@ class ReversePolarEnumerationCuts(Transformation):
                     -min(
                         [
                             abs(coef[k, t]) / coef[j, t]
-                            for t in range(disjunct_idx)
+                            for t in range(1, disjunct_idx)
                             if coef[j, t] > 0
                         ]
                     )
                     * coef_new[j, j]
                 )
-
         coef = coef_new
-
+        debug_vars(Jp, Jm, idx_to_var, visitor.var_map)
         # First: NEEC cut
 
         # For later, we will attempt to avoid taking the logarithm;
@@ -250,25 +270,29 @@ class ReversePolarEnumerationCuts(Transformation):
         for k in Jm:
             alpha[k] = -1 * min([abs(coef[k, j]) for j in Jp])
 
-        breakpoint()
-        # is this what it should be?
+        # this is correct, right?
         assert alpha[0] == -1
 
         cost = {}
         for j in Jp:
             for k in Jm:
                 cost[j, k] = log(abs(coef[k, j]) / coef[j, j])
+                print(f"cost[{j}, {k}]={cost[j, k]}")
         delta = {k: log(abs(v)) for k, v in alpha.items()}
         # vertices already added
-        used_set = {delta}
+        used_list = [delta]
         # vertices to construct G_delta from
         vertex_queue = [delta]
-        self._add_cut(delta, disj)
+        self._add_cut(delta, disj, idx_to_var, visitor.var_map, Jp, Jm)
+        breakpoint()
         added_cuts = 1
 
-        while not vertex_queue.empty() and added_cuts <= num_cuts:
-            dstar = vertex_queue.pop()
+        while vertex_queue and (not num_cuts or added_cuts <= num_cuts):
+            print(f"before popping, {len(vertex_queue)=}")
+            dstar = vertex_queue.pop(0)
+            print("calling _enumerate_graph_cuts")
             for cut in self._enumerate_graph_cuts(dstar, Jp, Jm, cost):
+                print(f"found valid cut: {cut}")
                 l = min(
                     [
                         cost[j, k] - dstar[k] + dstar[j]
@@ -277,14 +301,26 @@ class ReversePolarEnumerationCuts(Transformation):
                         if k in cut and j not in cut
                     ]
                 )
-                d_candidate = {k: (v + l if v in cut else v) for k, v in dstar.items()}
+                print(f"corresponding lambda^* is {l}")
+                d_candidate = {k: (v + l if k in cut else v) for k, v in dstar.items()}
                 # floating point...
-                for d in used_set:
+                found_near_match = False
+                for d in used_list:
                     if self._near_match(d_candidate, d):
-                        continue
+                        print("was near match")
+                        found_near_match = True
+                        break
+                if found_near_match:
+                    continue
                 vertex_queue.append(d_candidate)
-                self._add_cut(d_candidate, disj)
+                print(f"after appending, {len(vertex_queue)=}")
+                self._add_cut(d_candidate, disj, idx_to_var, visitor.var_map, Jp, Jm)
+                used_list.append(d_candidate)
                 added_cuts += 1
+                breakpoint()
+            print("finished call to _enumerate_graph_cuts")
+            print(f"after enumerate_graph_cuts, {len(vertex_queue)=}")
+            breakpoint()
 
     # generator yielding graph cuts (we yield the X sets) in G_dstar
     def _enumerate_graph_cuts(self, dstar, Jp, Jm, cost):
@@ -295,6 +331,7 @@ class ReversePolarEnumerationCuts(Transformation):
             for k in Jm:
                 if abs(dstar[k] - dstar[j] - cost[j, k]) < EPS:
                     G_dstar.add_edge(k, j)
+
         # Ternary Booleans in honor of George Boole. True means in X,
         # False means in X_bar, None means not yet assigned
         for k0 in Jm:
@@ -314,29 +351,35 @@ class ReversePolarEnumerationCuts(Transformation):
         return
 
     def _branch(self, G_dstar, label, Jp, Jm):
+        print("calling branch()")
+        print(f"here {G_dstar.edges=}")
+        print(f"here initially {label=}")
         # Here we will mostly deal with G_dstar[N_0 \ X]
         G_working = G_dstar.copy()
         for k, v in label.items():
             if v:
                 G_working.remove_node(k)
-        # Forcing rules necessarily put certain nodes in X
+        # Forcing rules that necessarily put certain nodes in X
         for k in Jm:
             if label[k]:
                 for j in G_dstar.successors(k):
+                    print("did forcing rule 1")
                     label[j] = True
         for k in Jm:
             if label[k] is None:
-                if len(G_dstar.successors(k)) > 0:
-                    if not G_working.has_path(k, 0):
-                        label[j] = True
+                if G_dstar.out_degree(k) > 0:
+                    if not nx.has_path(G_working, k, 0):
+                        print("did forcing rule 2")
+                        label[k] = True
 
         for j in Jp:
-            if label(j):
+            if label[j]:
                 # these are in Jm only
                 for k in G_dstar.predecessors(j):
                     if label[k] is None:
-                        if G_working.has_path(k, 0):
-                            # I will trust that this is not exponential time
+                        if nx.has_path(G_working.to_undirected(as_view=True), k, 0):
+                            # I will trust that this is never exponential time
+                            print(f"had path to 0, doing a double branch for {k=}")
                             l1 = label.copy()
                             l1[k] = True
                             l2 = label.copy()
@@ -364,6 +407,19 @@ class ReversePolarEnumerationCuts(Transformation):
             else:
                 if k in Jp:
                     found_Jp_in_Xbar = True
+        print(f"here cut is {cut}, {Jm=}, {Jp=}, {found_Jm_in_X=}, {found_Jp_in_Xbar=}")
         if found_Jm_in_X and found_Jp_in_Xbar:
+            print(f"yielding {cut=}")
             yield cut
+        print("not yielding")
         return
+
+
+def debug_vars(Jp, Jm, idx_to_var, var_map):
+    for j in Jp:
+        print(f"Index {j} (Jp) corresponds to {var_map[idx_to_var[j]].name}")
+    for k in Jm:
+        if k != 0:
+            print(f"Index {k} (Jm) corresponds to {var_map[idx_to_var[k]].name}")
+        else:
+            print("Index 0 (Jm) is the dummy variable")

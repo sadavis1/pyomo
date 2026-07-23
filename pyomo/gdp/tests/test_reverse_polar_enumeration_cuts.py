@@ -61,6 +61,7 @@ import pyomo.gdp.tests.common_tests as ct
 # todo remove
 import pyomo.gdp.plugins.reverse_polar_enumeration_cuts as rpec_module
 
+
 class TestReversePolarEnumerationCuts(unittest.TestCase):
     def test_example(self):
         m = ConcreteModel()
@@ -79,5 +80,58 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         m.d4.c = Constraint(expr=2 * m.x1 - 2 * m.x2 - 2 * m.x3 >= 1)
         m.d = Disjunction(expr=[m.d1, m.d2, m.d3, m.d4])
 
-        a = TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
+        TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
         breakpoint()
+
+    def test_linearly_many_easy(self):
+        # Easier version: 4 variables, 3 cuts
+        # After preprocessing the model should look exactly the same,
+        # and the correct cuts should be:
+        # x1 + x2 - x3 - x4 >= 1
+        # 3x1 + x2 -3x3 - 3x4 >= 1
+        # 4x1 + x2 -3x3 - 4x4 >= 1
+        m = ConcreteModel()
+        m.x1 = Var(bounds=(0, 20))
+        m.x2 = Var(bounds=(0, 20))
+        m.x3 = Var(bounds=(0, 20))
+        m.x4 = Var(bounds=(0, 20))
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(expr=m.x1 - m.x3 - m.x4 >= 1)
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(expr=m.x2 - 3 * m.x3 - 4 * m.x4 >= 1)
+        m.d = Disjunction(expr=[m.d1, m.d2])
+
+        TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
+        # why is this failing?
+        ALMOST_ONE = 1.00000000001
+        assertExpressionsEqual(
+            self,
+            m._reverse_polar_enumeration_cuts[0].body,
+            m.x1 + m.x2 - ALMOST_ONE * m.x3 - ALMOST_ONE * m.x4,
+            places=8,
+        )
+
+    def test_linearly_many_medium(self):
+        # Constructing the model according to this pattern with n
+        # variables, the resulting model should have exactly n/2 + 1
+        # cuts. The intermediate disjunction formed during preprocessing
+        # has 4 disjuncts
+        m = ConcreteModel()
+        m.x1 = Var(bounds=(0, 20))
+        m.x2 = Var(bounds=(0, 20))
+        m.x3 = Var(bounds=(0, 20))
+        m.x4 = Var(bounds=(0, 20))
+        m.x5 = Var(bounds=(0, 20))
+        m.x6 = Var(bounds=(0, 20))
+        m.x7 = Var(bounds=(0, 20))
+        m.x8 = Var(bounds=(0, 20))
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(expr=m.x1 + m.x2 - m.x5 - m.x6 - m.x7 - m.x8 >= 1)
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(
+            expr=m.x3 + m.x4 - 5 * m.x5 - 6 * m.x6 - 7 * m.x7 - 8 * m.x8 >= 1
+        )
+        m.d = Disjunction(expr=[m.d1, m.d2])
+
+        TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
+        assert False
