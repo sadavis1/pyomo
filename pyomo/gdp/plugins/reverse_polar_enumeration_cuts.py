@@ -8,6 +8,7 @@
 # ____________________________________________________________________________________
 
 import logging
+import itertools
 from pyomo.core.base import Transformation, TransformationFactory, NonNegativeIntegers
 from pyomo.core.base.component import ActiveComponent
 from pyomo.core.base.block import SubclassOf
