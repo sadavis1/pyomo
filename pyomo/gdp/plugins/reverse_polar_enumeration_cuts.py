@@ -284,7 +284,8 @@ class ReversePolarEnumerationCuts(Transformation):
         # vertices to construct G_delta from
         vertex_queue = [delta]
         self._add_cut(delta, disj, idx_to_var, visitor.var_map, Jp, Jm)
-        breakpoint()
+        # breakpoint()
+        print("=====================")
         added_cuts = 1
 
         while vertex_queue and (not num_cuts or added_cuts <= num_cuts):
@@ -292,7 +293,6 @@ class ReversePolarEnumerationCuts(Transformation):
             dstar = vertex_queue.pop(0)
             print("calling _enumerate_graph_cuts")
             for cut in self._enumerate_graph_cuts(dstar, Jp, Jm, cost):
-                print(f"found valid cut: {cut}")
                 l = min(
                     [
                         cost[j, k] - dstar[k] + dstar[j]
@@ -301,7 +301,7 @@ class ReversePolarEnumerationCuts(Transformation):
                         if k in cut and j not in cut
                     ]
                 )
-                print(f"corresponding lambda^* is {l}")
+                print(f"Calculated lambda*={l}")
                 d_candidate = {k: (v + l if k in cut else v) for k, v in dstar.items()}
                 # floating point...
                 found_near_match = False
@@ -317,10 +317,12 @@ class ReversePolarEnumerationCuts(Transformation):
                 self._add_cut(d_candidate, disj, idx_to_var, visitor.var_map, Jp, Jm)
                 used_list.append(d_candidate)
                 added_cuts += 1
-                breakpoint()
+                # breakpoint()
+                print("=====================")
             print("finished call to _enumerate_graph_cuts")
             print(f"after enumerate_graph_cuts, {len(vertex_queue)=}")
-            breakpoint()
+            # breakpoint()
+            print("=====================")
 
     # generator yielding graph cuts (we yield the X sets) in G_dstar
     def _enumerate_graph_cuts(self, dstar, Jp, Jm, cost):
@@ -396,26 +398,48 @@ class ReversePolarEnumerationCuts(Transformation):
         for k in label.keys():
             if label[k] is None:
                 label[k] = False
-        found_Jm_in_X = False
-        found_Jp_in_Xbar = False
         cut = set()
         for k in label.keys():
             if label[k]:
                 cut.add(k)
-                if k in Jm:
-                    found_Jm_in_X = True
-            else:
-                if k in Jp:
-                    found_Jp_in_Xbar = True
-        print(f"here cut is {cut}, {Jm=}, {Jp=}, {found_Jm_in_X=}, {found_Jp_in_Xbar=}")
-        if found_Jm_in_X and found_Jp_in_Xbar:
-            print(f"yielding {cut=}")
+        if self._validate_cut(cut, G_dstar, Jp, Jm):
+            print(f"Yielding valid cut {cut}")
             yield cut
-        print("not yielding")
+            return
+        print(f"Cut {cut} failed validation")
         return
+
+    def _validate_cut(self, cut, G_dstar, Jp, Jm):
+        cut_complement = set()
+        G_X = G_dstar.to_undirected(as_view=False)
+        G_Xbar = G_dstar.to_undirected(as_view=False)
+        for j in itertools.chain(Jp, Jm):
+            if j in cut:
+                G_Xbar.remove_node(j)
+            else:
+                G_X.remove_node(j)
+                cut_complement.add(j)
+        # (1) and (3) are known to be able to fail
+        # (3) X intersects Jm and Xbar intersects Jp
+        if Jm.isdisjoint(cut) or Jp.isdisjoint(cut_complement):
+            return False
+        # (1) X and Xbar induce connected subgraphs of G_dstar
+        if not nx.is_connected(G_Xbar) or not nx.is_connected(G_X):
+            return False
+        
+        # (2) No directed edges run from X to Xbar
+        # This is probably not a possible failure case, but let's check just in case.
+        for (src, dst) in G_dstar.edges:
+            if src in cut and dst in cut_complement:
+                return False
+        return True
+        
+            
+            
 
 
 def debug_vars(Jp, Jm, idx_to_var, var_map):
+    print()
     for j in Jp:
         print(f"Index {j} (Jp) corresponds to {var_map[idx_to_var[j]].name}")
     for k in Jm:

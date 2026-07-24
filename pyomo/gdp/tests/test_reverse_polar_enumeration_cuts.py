@@ -58,8 +58,11 @@ import pyomo.gdp.tests.models as models
 import pyomo.gdp.tests.common_tests as ct
 
 
-# todo remove
-import pyomo.gdp.plugins.reverse_polar_enumeration_cuts as rpec_module
+# The pyomo expression system collapses 1.0*x into x, which results in
+# floating-point 1.0 being converted to integer 1 when
+# assertExpressionsEqual looks at them, and those values are not the
+# same regardless of the value of `places`. Work around this.
+ALMOST_ONE = 1.00000000000001
 
 
 class TestReversePolarEnumerationCuts(unittest.TestCase):
@@ -81,12 +84,18 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         m.d = Disjunction(expr=[m.d1, m.d2, m.d3, m.d4])
 
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
-        breakpoint()
+        assertExpressionsEqual(
+            self,
+            m._reverse_polar_enumeration_cuts[0].body,
+            5.0 * m.x1 + m.x4 + 4.0 * m.x3 - (5.0 / 3.0) * m.x2,
+            places=8,
+        )
+        # TODO: check more than the NEEC cut here
 
     def test_linearly_many_easy(self):
         # Easier version: 4 variables, 3 cuts
-        # After preprocessing the model should look exactly the same,
-        # and the correct cuts should be:
+        # After preprocessing the disjunction should look exactly the same,
+        # and the obtained cuts should be:
         # x1 + x2 - x3 - x4 >= 1
         # 3x1 + x2 -3x3 - 3x4 >= 1
         # 4x1 + x2 -3x3 - 4x4 >= 1
@@ -102,14 +111,33 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         m.d = Disjunction(expr=[m.d1, m.d2])
 
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
-        # why is this failing?
-        ALMOST_ONE = 1.00000000001
+
+        self.assertEqual(3, len(m._reverse_polar_enumeration_cuts))
+
         assertExpressionsEqual(
             self,
             m._reverse_polar_enumeration_cuts[0].body,
             m.x1 + m.x2 - ALMOST_ONE * m.x3 - ALMOST_ONE * m.x4,
             places=8,
         )
+        self.assertEqual(1, m._reverse_polar_enumeration_cuts[0].lower)
+        self.assertIsNone(m._reverse_polar_enumeration_cuts[0].upper)
+        assertExpressionsEqual(
+            self,
+            m._reverse_polar_enumeration_cuts[1].body,
+            3.0 * m.x1 + m.x2 - 3.0 * m.x3 - 3.0 * m.x4,
+            places=8,
+        )
+        self.assertEqual(1, m._reverse_polar_enumeration_cuts[1].lower)
+        self.assertIsNone(m._reverse_polar_enumeration_cuts[1].upper)
+        assertExpressionsEqual(
+            self,
+            m._reverse_polar_enumeration_cuts[2].body,
+            4.0 * m.x1 + m.x2 - 3.0 * m.x3 - 4.0 * m.x4,
+            places=8,
+        )
+        self.assertEqual(1, m._reverse_polar_enumeration_cuts[2].lower)
+        self.assertIsNone(m._reverse_polar_enumeration_cuts[2].upper)
 
     def test_linearly_many_medium(self):
         # Constructing the model according to this pattern with n
@@ -134,4 +162,85 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         m.d = Disjunction(expr=[m.d1, m.d2])
 
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
-        assert False
+
+        self.assertEqual(5, len(m._reverse_polar_enumeration_cuts))
+        assertExpressionsEqual(
+            self,
+            m._reverse_polar_enumeration_cuts[0].body,
+            m.x4
+            + m.x1
+            + m.x2
+            + m.x3
+            - ALMOST_ONE * m.x5
+            - ALMOST_ONE * m.x6
+            - ALMOST_ONE * m.x7
+            - ALMOST_ONE * m.x8,
+            places=8,
+        )
+        self.assertEqual(1, m._reverse_polar_enumeration_cuts[0].lower)
+        self.assertIsNone(m._reverse_polar_enumeration_cuts[0].upper)
+        assertExpressionsEqual(
+            self,
+            m._reverse_polar_enumeration_cuts[1].body,
+            m.x4
+            + 5.0 * m.x1
+            + 5.0 * m.x2
+            + m.x3
+            - 5.0 * m.x5
+            - 5.0 * m.x6
+            - 5.0 * m.x7
+            - 5.0 * m.x8,
+            places=8,
+        )
+        self.assertEqual(1, m._reverse_polar_enumeration_cuts[1].lower)
+        self.assertIsNone(m._reverse_polar_enumeration_cuts[1].upper)
+        assertExpressionsEqual(
+            self,
+            m._reverse_polar_enumeration_cuts[2].body,
+            m.x4
+            + 6.0 * m.x1
+            + 6.0 * m.x2
+            + m.x3
+            - 5.0 * m.x5
+            - 6.0 * m.x6
+            - 6.0 * m.x7
+            - 6.0 * m.x8,
+            places=8,
+        )
+        self.assertEqual(1, m._reverse_polar_enumeration_cuts[2].lower)
+        self.assertIsNone(m._reverse_polar_enumeration_cuts[2].upper)
+        assertExpressionsEqual(
+            self,
+            m._reverse_polar_enumeration_cuts[3].body,
+            m.x4
+            + 7.0 * m.x1
+            + 7.0 * m.x2
+            + m.x3
+            - 5.0 * m.x5
+            - 6.0 * m.x6
+            - 7.0 * m.x7
+            - 7.0 * m.x8,
+            places=8,
+        )
+        self.assertEqual(1, m._reverse_polar_enumeration_cuts[3].lower)
+        self.assertIsNone(m._reverse_polar_enumeration_cuts[3].upper)
+        assertExpressionsEqual(
+            self,
+            m._reverse_polar_enumeration_cuts[4].body,
+            m.x4
+            + 8.0 * m.x1
+            + 8.0 * m.x2
+            + m.x3
+            - 5.0 * m.x5
+            - 6.0 * m.x6
+            - 7.0 * m.x7
+            - 8.0 * m.x8,
+            places=8,
+        )
+        self.assertEqual(1, m._reverse_polar_enumeration_cuts[4].lower)
+        self.assertIsNone(m._reverse_polar_enumeration_cuts[4].upper)
+
+
+    # TODO:
+    # - test a big case for linearly many
+    # - test a small case for exponentially many
