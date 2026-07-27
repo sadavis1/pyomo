@@ -209,6 +209,8 @@ class ReversePolarEnumerationCuts(Transformation):
             multiplier /= lb
 
             for v, c in repn.linear.items():
+                # here v is the var id
+                c = c * multiplier
                 if v not in var_to_idx:
                     idx = len(idx_to_var)
                     idx_to_var[idx] = v
@@ -216,14 +218,18 @@ class ReversePolarEnumerationCuts(Transformation):
                 else:
                     idx = var_to_idx[v]
 
-                if c * multiplier > 0:
+                if c > 0:
                     Jp.add(idx)
                     Jm.discard(idx)
-                elif c * multiplier < 0:  # note: possible to end up in neitheer
+                # NOTE: a variable can be neither Jp nor Jm at this
+                # stage, but this will put such vars in Jm since we
+                # aren't catching zero coefficients. We handle this
+                # below
+                elif c < 0:
                     if idx not in Jp:
                         Jm.add(idx)
 
-                coef[(idx, disjunct_idx)] = c * multiplier
+                coef[(idx, disjunct_idx)] = c
 
             disjunct_idx += 1
 
@@ -233,6 +239,17 @@ class ReversePolarEnumerationCuts(Transformation):
             for j in range(1, len(idx_to_var)):
                 if (j, t) not in coef:
                     coef[j, t] = 0
+                    if j in Jm:
+                        # TODO verify this is actually valid. In this
+                        # case, we effectively delete this variable
+                        # completely from the disjunction. I believe
+                        # this should be correct in light of Connor's
+                        # mixed-sign variables lemma. In any case the
+                        # variable certainly cannot go into Jm.
+                        # TODO: This _is_ the only way zero coefficients
+                        # can arise (ie, they don't show up in the
+                        # repn), right?
+                        Jm.discard(j)
         # Additional preprocessing (sparse positive intersections lemma
         # from Connor): Eliminate all-negatives disjuncts (they would be
         # empty), and perform various alterations to the
@@ -261,6 +278,9 @@ class ReversePolarEnumerationCuts(Transformation):
                 )
         coef = coef_new
         debug_vars(Jp, Jm, idx_to_var, visitor.var_map)
+        for k in Jm:
+            for j in Jp:
+                print(f"coef[{k},{j}]={coef[k,j]} (supposed to be <0; this is {("true" if coef[k, j]<0 else "false")})")
         # First: NEEC cut
 
         # For later, we will attempt to avoid taking the logarithm;
@@ -277,6 +297,8 @@ class ReversePolarEnumerationCuts(Transformation):
         cost = {}
         for j in Jp:
             for k in Jm:
+                print(f"here coef[{k}, {j}]={coef[k,j]}")
+                print(f"top={coef[k, j]}, bottom={coef[j,j]}")
                 cost[j, k] = log(abs(coef[k, j]) / coef[j, j])
                 print(f"cost[{j}, {k}]={cost[j, k]}")
         delta = {k: log(abs(v)) for k, v in alpha.items()}

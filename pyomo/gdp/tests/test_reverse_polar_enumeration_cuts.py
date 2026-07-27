@@ -240,7 +240,45 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         self.assertEqual(1, m._reverse_polar_enumeration_cuts[4].lower)
         self.assertIsNone(m._reverse_polar_enumeration_cuts[4].upper)
 
-
     # TODO:
     # - test a big case for linearly many
-    # - test a small case for exponentially many
+
+    def test_not_Jm_or_Jp(self):
+        # Make sure we don't choke when a variable has negative and zero
+        # coefficients, but no positive ones.
+        m = ConcreteModel()
+        m.x1 = Var(bounds=(0, 20))
+        m.x2 = Var(bounds=(0, 20))
+        m.x3 = Var(bounds=(0, 20))
+        m.x4 = Var(bounds=(0, 20))
+        m.x5 = Var(bounds=(0, 20))
+        m.x6 = Var(bounds=(0, 20))
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(expr=m.x1 - m.x4 - 2 * m.x5 - 2 * m.x6 >= 1)
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(expr=m.x2 - 3 * m.x5 - 2 * m.x6 >= 1)
+        m.dn = Disjunction(expr=[m.d1, m.d2])
+        # does not raise exception
+        TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
+
+
+    def test_exponentially_many_easy(self):
+        # For this pattern, a disjunction on n variables with n/2
+        # disjuncts leads to a total of 2^{n/2} - 1 cuts. Here we have
+        # n=6 so there should be 7 cuts generated.
+        m = ConcreteModel()
+        m.x1 = Var(bounds=(0, 20))
+        m.x2 = Var(bounds=(0, 20))
+        m.x3 = Var(bounds=(0, 20))
+        m.x4 = Var(bounds=(0, 20))
+        m.x5 = Var(bounds=(0, 20))
+        m.x6 = Var(bounds=(0, 20))
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(expr=m.x1 - m.x4 - 2 * m.x5 - 2 * m.x6 >= 1)
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(expr=m.x2 - 2 * m.x4 - m.x5 - 2 * m.x6 >= 1)
+        m.d3 = Disjunct()
+        m.d3.c = Constraint(expr=m.x3 - 2 * m.x4 - 2 * m.x5 - m.x6 >= 1)
+        m.dn = Disjunction(expr=[m.d1, m.d2, m.d3])
+        TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
+        self.assertEqual(7, len(m._reverse_polar_enumeration_cuts))
