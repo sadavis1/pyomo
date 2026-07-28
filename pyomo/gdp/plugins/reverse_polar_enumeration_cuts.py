@@ -314,8 +314,11 @@ class ReversePolarEnumerationCuts(Transformation):
         while vertex_queue and (not num_cuts or added_cuts <= num_cuts):
             print(f"before popping, {len(vertex_queue)=}")
             dstar = vertex_queue.pop(0)
+            print(f"working form vertex {dstar=}")
             print("calling _enumerate_graph_cuts")
+            # for cut in self._enumerate_graph_cuts_exhaustive_debug(dstar, Jp, Jm, cost):
             for cut in self._enumerate_graph_cuts(dstar, Jp, Jm, cost):
+                print(f"Using cut: {cut}")
                 l = min(
                     [
                         cost[j, k] - dstar[k] + dstar[j]
@@ -362,6 +365,7 @@ class ReversePolarEnumerationCuts(Transformation):
         for k0 in Jm:
             if k0 == 0:
                 continue
+            print(f"iterating {k0=}")
             label = {}
             for i in Jm:
                 if i < k0:
@@ -379,8 +383,9 @@ class ReversePolarEnumerationCuts(Transformation):
         print("calling branch()")
         print(f"here {G_dstar.edges=}")
         print(f"here initially {label=}")
-        # Here we will mostly deal with G_dstar[N_0 \ X]
-        G_working = G_dstar.copy()
+        # Here we will mostly deal with G_dstar[N_0 \ X]. Also we only
+        # check for undirected paths.
+        G_working = G_dstar.to_undirected(as_view=False)
         for k, v in label.items():
             if v:
                 G_working.remove_node(k)
@@ -390,19 +395,25 @@ class ReversePolarEnumerationCuts(Transformation):
                 for j in G_dstar.successors(k):
                     print("did forcing rule 1")
                     label[j] = True
+                    if j in G_working.nodes:
+                        G_working.remove_node(j)
         for k in Jm:
             if label[k] is None:
-                if G_dstar.out_degree(k) > 0:
-                    if not nx.has_path(G_working, k, 0):
-                        print("did forcing rule 2")
-                        label[k] = True
+                for j in G_dstar.successors(k):
+                    if label[j]:
+                        if not nx.has_path(G_working, k, 0):
+                            print("did forcing rule 2")
+                            label[k] = True
+                            if k in G_working.nodes:
+                                G_working.remove_node(k)
+                        break
 
         for j in Jp:
             if label[j]:
                 # these are in Jm only
                 for k in G_dstar.predecessors(j):
                     if label[k] is None:
-                        if nx.has_path(G_working.to_undirected(as_view=True), k, 0):
+                        if nx.has_path(G_working, k, 0):
                             # I will trust that this is never exponential time
                             print(f"had path to 0, doing a double branch for {k=}")
                             l1 = label.copy()
@@ -445,19 +456,38 @@ class ReversePolarEnumerationCuts(Transformation):
         # (1) and (3) are known to be able to fail
         # (3) X intersects Jm and Xbar intersects Jp
         if Jm.isdisjoint(cut) or Jp.isdisjoint(cut_complement):
+            print("failed: X disjoint from Jm or Xbar disjoint from Jp")
             return False
         # (1) X and Xbar induce connected subgraphs of G_dstar
         if not nx.is_connected(G_Xbar) or not nx.is_connected(G_X):
+            print("failed: G[X] or G[Xbar] not connected")
             return False
         
         # (2) No directed edges run from X to Xbar
         # This is probably not a possible failure case, but let's check just in case.
         for (src, dst) in G_dstar.edges:
             if src in cut and dst in cut_complement:
+                print("failed: there was an edge of G going from X to Xbar")
                 return False
         return True
         
-            
+    def _enumerate_graph_cuts_exhaustive_debug(self, dstar, Jp, Jm, cost):
+        G_dstar = nx.DiGraph()
+        G_dstar.add_nodes_from(Jp)
+        G_dstar.add_nodes_from(Jm)
+        for j in Jp:
+            for k in Jm:
+                if abs(dstar[k] - dstar[j] - cost[j, k]) < EPS:
+                    G_dstar.add_edge(k, j)
+        nodes = list(Jp.union(Jm))
+        # power set
+        for cut in itertools.chain.from_iterable(itertools.combinations(nodes, r) for r in range(len(nodes) + 1)):
+            if 0 in cut:
+                continue
+            if self._validate_cut(cut, G_dstar, Jp, Jm):
+                yield cut
+        return
+                
             
 
 
