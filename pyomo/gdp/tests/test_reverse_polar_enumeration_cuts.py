@@ -57,6 +57,8 @@ import pyomo.gdp.plugins.hull as hull_module
 import pyomo.gdp.tests.models as models
 import pyomo.gdp.tests.common_tests as ct
 
+from pyomo.gdp.plugins.reverse_polar_enumeration_cuts import get_constraint
+
 
 # The pyomo expression system collapses 1.0*x into x, which results in
 # floating-point 1.0 being converted to integer 1 when
@@ -84,9 +86,11 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         m.d = Disjunction(expr=[m.d1, m.d2, m.d3, m.d4])
 
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
+        cons = get_constraint(m, m.d)
+
         assertExpressionsEqual(
             self,
-            m._reverse_polar_enumeration_cuts[0].body,
+            cons[0].body,
             5.0 * m.x1 + m.x4 + 4.0 * m.x3 - (5.0 / 3.0) * m.x2,
             places=8,
         )
@@ -111,33 +115,34 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         m.d = Disjunction(expr=[m.d1, m.d2])
 
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
+        cons = get_constraint(m, m.d)
 
-        self.assertEqual(3, len(m._reverse_polar_enumeration_cuts))
+        self.assertEqual(3, len(cons))
 
         assertExpressionsEqual(
             self,
-            m._reverse_polar_enumeration_cuts[0].body,
+            cons[0].body,
             m.x1 + m.x2 - ALMOST_ONE * m.x3 - ALMOST_ONE * m.x4,
             places=8,
         )
-        self.assertEqual(1, m._reverse_polar_enumeration_cuts[0].lower)
-        self.assertIsNone(m._reverse_polar_enumeration_cuts[0].upper)
+        self.assertEqual(1, cons[0].lower)
+        self.assertIsNone(cons[0].upper)
         assertExpressionsEqual(
             self,
-            m._reverse_polar_enumeration_cuts[1].body,
+            cons[1].body,
             3.0 * m.x1 + m.x2 - 3.0 * m.x3 - 3.0 * m.x4,
             places=8,
         )
-        self.assertEqual(1, m._reverse_polar_enumeration_cuts[1].lower)
-        self.assertIsNone(m._reverse_polar_enumeration_cuts[1].upper)
+        self.assertEqual(1, cons[1].lower)
+        self.assertIsNone(cons[1].upper)
         assertExpressionsEqual(
             self,
-            m._reverse_polar_enumeration_cuts[2].body,
+            cons[2].body,
             4.0 * m.x1 + m.x2 - 3.0 * m.x3 - 4.0 * m.x4,
             places=8,
         )
-        self.assertEqual(1, m._reverse_polar_enumeration_cuts[2].lower)
-        self.assertIsNone(m._reverse_polar_enumeration_cuts[2].upper)
+        self.assertEqual(1, cons[2].lower)
+        self.assertIsNone(cons[2].upper)
 
     def test_linearly_many_medium(self):
         # Constructing the model according to this pattern with n
@@ -162,11 +167,12 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         m.d = Disjunction(expr=[m.d1, m.d2])
 
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
+        cons = get_constraint(m, m.d)
 
-        self.assertEqual(5, len(m._reverse_polar_enumeration_cuts))
+        self.assertEqual(5, len(cons))
         assertExpressionsEqual(
             self,
-            m._reverse_polar_enumeration_cuts[0].body,
+            cons[0].body,
             m.x4
             + m.x1
             + m.x2
@@ -177,11 +183,11 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
             - ALMOST_ONE * m.x8,
             places=8,
         )
-        self.assertEqual(1, m._reverse_polar_enumeration_cuts[0].lower)
-        self.assertIsNone(m._reverse_polar_enumeration_cuts[0].upper)
+        self.assertEqual(1, cons[0].lower)
+        self.assertIsNone(cons[0].upper)
         assertExpressionsEqual(
             self,
-            m._reverse_polar_enumeration_cuts[1].body,
+            cons[1].body,
             m.x4
             + 5.0 * m.x1
             + 5.0 * m.x2
@@ -192,11 +198,11 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
             - 5.0 * m.x8,
             places=8,
         )
-        self.assertEqual(1, m._reverse_polar_enumeration_cuts[1].lower)
-        self.assertIsNone(m._reverse_polar_enumeration_cuts[1].upper)
+        self.assertEqual(1, cons[1].lower)
+        self.assertIsNone(cons[1].upper)
         assertExpressionsEqual(
             self,
-            m._reverse_polar_enumeration_cuts[2].body,
+            cons[2].body,
             m.x4
             + 6.0 * m.x1
             + 6.0 * m.x2
@@ -207,11 +213,11 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
             - 6.0 * m.x8,
             places=8,
         )
-        self.assertEqual(1, m._reverse_polar_enumeration_cuts[2].lower)
-        self.assertIsNone(m._reverse_polar_enumeration_cuts[2].upper)
+        self.assertEqual(1, cons[2].lower)
+        self.assertIsNone(cons[2].upper)
         assertExpressionsEqual(
             self,
-            m._reverse_polar_enumeration_cuts[3].body,
+            cons[3].body,
             m.x4
             + 7.0 * m.x1
             + 7.0 * m.x2
@@ -222,11 +228,11 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
             - 7.0 * m.x8,
             places=8,
         )
-        self.assertEqual(1, m._reverse_polar_enumeration_cuts[3].lower)
-        self.assertIsNone(m._reverse_polar_enumeration_cuts[3].upper)
+        self.assertEqual(1, cons[3].lower)
+        self.assertIsNone(cons[3].upper)
         assertExpressionsEqual(
             self,
-            m._reverse_polar_enumeration_cuts[4].body,
+            cons[4].body,
             m.x4
             + 8.0 * m.x1
             + 8.0 * m.x2
@@ -237,8 +243,8 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
             - 8.0 * m.x8,
             places=8,
         )
-        self.assertEqual(1, m._reverse_polar_enumeration_cuts[4].lower)
-        self.assertIsNone(m._reverse_polar_enumeration_cuts[4].upper)
+        self.assertEqual(1, cons[4].lower)
+        self.assertIsNone(cons[4].upper)
 
     # TODO:
     # - test a big case for linearly many
@@ -261,7 +267,6 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         # does not raise exception
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
 
-
     def test_exponentially_many_easy(self):
         # For this pattern, a disjunction on n variables with n/2
         # disjuncts leads to a total of 2^{n/2} - 1 cuts. Here we have
@@ -280,5 +285,85 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         m.d3 = Disjunct()
         m.d3.c = Constraint(expr=m.x3 - 2 * m.x4 - 2 * m.x5 - m.x6 >= 1)
         m.dn = Disjunction(expr=[m.d1, m.d2, m.d3])
+
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
-        self.assertEqual(7, len(m._reverse_polar_enumeration_cuts))
+        cons = get_constraint(m, m.dn)
+
+        self.assertEqual(7, len(cons))
+        assertExpressionsEqual(
+            self,
+            cons[0].body,
+            +m.x1
+            + m.x2
+            + m.x3
+            - ALMOST_ONE * m.x4
+            - ALMOST_ONE * m.x5
+            - ALMOST_ONE * m.x6,
+            places=8,
+        )
+        assertExpressionsEqual(
+            self,
+            cons[1].body,
+            +2.0 * m.x1
+            + m.x2
+            + m.x3
+            - 2.0 * m.x4
+            - ALMOST_ONE * m.x5
+            - ALMOST_ONE * m.x6,
+            places=8,
+        )
+        assertExpressionsEqual(
+            self,
+            cons[2].body,
+            +m.x1
+            + 2.0 * m.x2
+            + m.x3
+            - ALMOST_ONE * m.x4
+            - 2.0 * m.x5
+            - ALMOST_ONE * m.x6,
+            places=8,
+        )
+        assertExpressionsEqual(
+            self,
+            cons[3].body,
+            +m.x1
+            + m.x2
+            + 2.0 * m.x3
+            - ALMOST_ONE * m.x4
+            - ALMOST_ONE * m.x5
+            - 2.0 * m.x6,
+            places=8,
+        )
+        assertExpressionsEqual(
+            self,
+            cons[4].body,
+            +2.0 * m.x1
+            + 2.0 * m.x2
+            + m.x3
+            - 2.0 * m.x4
+            - 2.0 * m.x5
+            - ALMOST_ONE * m.x6,
+            places=8,
+        )
+        assertExpressionsEqual(
+            self,
+            cons[5].body,
+            +2.0 * m.x1
+            + m.x2
+            + 2.0 * m.x3
+            - 2.0 * m.x4
+            - ALMOST_ONE * m.x5
+            - 2.0 * m.x6,
+            places=8,
+        )
+        assertExpressionsEqual(
+            self,
+            cons[6].body,
+            +m.x1
+            + 2.0 * m.x2
+            + 2.0 * m.x3
+            - ALMOST_ONE * m.x4
+            - 2.0 * m.x5
+            - 2.0 * m.x6,
+            places=8,
+        )

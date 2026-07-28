@@ -14,8 +14,10 @@ from pyomo.core.base.component import ActiveComponent
 from pyomo.core.base.block import SubclassOf
 from pyomo.core.util import target_list
 from pyomo.core.base.enums import SortComponents
+from pyomo.common.autoslots import AutoSlots
 from pyomo.common.collections import ComponentMap, ComponentSet
 from pyomo.common.config import ConfigDict, ConfigValue
+from pyomo.common.modeling import unique_component_name
 from pyomo.core import Block, Constraint
 from pyomo.gdp import Disjunct, Disjunction, GDP_Error
 from pyomo.gdp.util import get_gdp_tree
@@ -23,11 +25,21 @@ from pyomo.repn.linear import LinearRepnVisitor
 from pyomo.repn.util import OrderedVarRecorder
 from math import log, exp
 
-import networkx as nx
+from pyomo.common.dependencies import networkx as nx, networkx_available
 
 
 logger = logging.getLogger(__name__)
 EPS = 1e-6
+
+
+class _ReversePolarEnumerationCutsData(AutoSlots.Mixin):
+    __slots__ = "disjunction_constraints_map"
+
+    def __init__(self):
+        self.disjunction_constraints_map = ComponentMap()
+
+
+Block.register_private_data_initializer(_ReversePolarEnumerationCutsData)
 
 
 @TransformationFactory.register(
@@ -44,7 +56,7 @@ class ReversePolarEnumerationCuts(Transformation):
     each disjunct contains only exactly one linear inequality on nonnegative variables.
     """
 
-    transformation_name = 'reverse_polar_enumeration_cuts'  # necessary?
+    transformation_name = 'reverse_polar_enumeration_cuts'
     CONFIG = ConfigDict('gdp.reverse_polar_enumeration_cuts')
     CONFIG.declare(
         'targets',
@@ -95,6 +107,8 @@ class ReversePolarEnumerationCuts(Transformation):
         self.logger = logger
 
     def _apply_to(self, instance, **kwds):
+        if not networkx_available:
+            raise GDP_Error("Networkx is required for this transformation.")
         if instance.ctype not in (Block, Disjunct):
             raise GDP_Error(
                 "Transformation called on %s of type %s. 'instance'"
@@ -109,11 +123,15 @@ class ReversePolarEnumerationCuts(Transformation):
         if targets is None:
             targets = (instance,)
 
+        xf_block = Block()
+        instance.add_component(
+            unique_component_name(instance, "_reverse_polar_enumeration_cuts"), xf_block
+        )
         tree = get_gdp_tree(targets, instance)
         for t in tree.reverse_topological_sort():
             if t.ctype is Disjunction:
                 self._validate_disjunction(t, tree)
-                self._generate_cuts(t, tree)
+                self._generate_cuts(instance, xf_block, t, tree)
 
     def _validate_disjunction(self, disj, tree):
         if tree.root_disjunct(disj) is not None:
@@ -137,7 +155,7 @@ class ReversePolarEnumerationCuts(Transformation):
                     f"{self.transformation_name} - no cuts are possible."
                 )
 
-    def _add_cut(self, delta, disj, idx_to_var, var_map, Jp, Jm):
+    def _add_cut(self, instance, xf_block, delta, disj, idx_to_var, var_map, Jp, Jm):
         expr = 0
         for k, v in delta.items():
             if k != 0:
@@ -147,12 +165,19 @@ class ReversePolarEnumerationCuts(Transformation):
                 elif k in Jm:
                     alpha = -exp(delta[k])
                 expr += alpha * var
-        b = disj.parent_block()
-        if not hasattr(b, '_reverse_polar_enumeration_cuts'):
-            b._reverse_polar_enumeration_cuts = Constraint(NonNegativeIntegers)
-        b._reverse_polar_enumeration_cuts[len(b._reverse_polar_enumeration_cuts)] = (
-            expr >= 1
-        )
+        # b = disj.parent_block()
+        # if not hasattr(b, '_reverse_polar_enumeration_cuts'):
+        #     b._reverse_polar_enumeration_cuts = Constraint(NonNegativeIntegers)
+        # b._reverse_polar_enumeration_cuts[len(b._reverse_polar_enumeration_cuts)] = (
+        #     expr >= 1
+        # )
+        if disj in instance.private_data().disjunction_constraints_map:
+            con = instance.private_data().disjunction_constraints_map[disj]
+        else:
+            con = Constraint(NonNegativeIntegers)
+            xf_block.add_component(unique_component_name(xf_block, disj.name), con)
+            instance.private_data().disjunction_constraints_map[disj] = con
+        con[len(con)] = expr >= 1
         print(f"Added a cut: {str(expr >= 1)}")
 
     def _near_match(self, d1, d2):
@@ -161,7 +186,7 @@ class ReversePolarEnumerationCuts(Transformation):
                 return False
         return True
 
-    def _generate_cuts(self, disj, tree):
+    def _generate_cuts(self, instance, xf_block, disj, tree):
         num_cuts = self._config.num_cuts
 
         # Bijectively label the vars as I find them since I need a dummy variable zero. (
@@ -278,9 +303,9 @@ class ReversePolarEnumerationCuts(Transformation):
                 )
         coef = coef_new
         debug_vars(Jp, Jm, idx_to_var, visitor.var_map)
-        for k in Jm:
-            for j in Jp:
-                print(f"coef[{k},{j}]={coef[k,j]} (supposed to be <0; this is {("true" if coef[k, j]<0 else "false")})")
+        # for k in Jm:
+        #     for j in Jp:
+        #         print(f"coef[{k},{j}]={coef[k,j]} (supposed to be <0; this is {("true" if coef[k, j]<0 else "false")})")
         # First: NEEC cut
 
         # For later, we will attempt to avoid taking the logarithm;
@@ -297,8 +322,7 @@ class ReversePolarEnumerationCuts(Transformation):
         cost = {}
         for j in Jp:
             for k in Jm:
-                print(f"here coef[{k}, {j}]={coef[k,j]}")
-                print(f"top={coef[k, j]}, bottom={coef[j,j]}")
+                print(f"here coef[{k}, {j}]={coef[k,j]}, coef[{j}, {j}]={coef[j,j]}")
                 cost[j, k] = log(abs(coef[k, j]) / coef[j, j])
                 print(f"cost[{j}, {k}]={cost[j, k]}")
         delta = {k: log(abs(v)) for k, v in alpha.items()}
@@ -306,7 +330,9 @@ class ReversePolarEnumerationCuts(Transformation):
         used_list = [delta]
         # vertices to construct G_delta from
         vertex_queue = [delta]
-        self._add_cut(delta, disj, idx_to_var, visitor.var_map, Jp, Jm)
+        self._add_cut(
+            instance, xf_block, delta, disj, idx_to_var, visitor.var_map, Jp, Jm
+        )
         # breakpoint()
         print("=====================")
         added_cuts = 1
@@ -340,7 +366,16 @@ class ReversePolarEnumerationCuts(Transformation):
                     continue
                 vertex_queue.append(d_candidate)
                 print(f"after appending, {len(vertex_queue)=}")
-                self._add_cut(d_candidate, disj, idx_to_var, visitor.var_map, Jp, Jm)
+                self._add_cut(
+                    instance,
+                    xf_block,
+                    d_candidate,
+                    disj,
+                    idx_to_var,
+                    visitor.var_map,
+                    Jp,
+                    Jm,
+                )
                 used_list.append(d_candidate)
                 added_cuts += 1
                 # breakpoint()
@@ -462,15 +497,15 @@ class ReversePolarEnumerationCuts(Transformation):
         if not nx.is_connected(G_Xbar) or not nx.is_connected(G_X):
             print("failed: G[X] or G[Xbar] not connected")
             return False
-        
+
         # (2) No directed edges run from X to Xbar
         # This is probably not a possible failure case, but let's check just in case.
-        for (src, dst) in G_dstar.edges:
+        for src, dst in G_dstar.edges:
             if src in cut and dst in cut_complement:
                 print("failed: there was an edge of G going from X to Xbar")
                 return False
         return True
-        
+
     def _enumerate_graph_cuts_exhaustive_debug(self, dstar, Jp, Jm, cost):
         G_dstar = nx.DiGraph()
         G_dstar.add_nodes_from(Jp)
@@ -481,14 +516,14 @@ class ReversePolarEnumerationCuts(Transformation):
                     G_dstar.add_edge(k, j)
         nodes = list(Jp.union(Jm))
         # power set
-        for cut in itertools.chain.from_iterable(itertools.combinations(nodes, r) for r in range(len(nodes) + 1)):
+        for cut in itertools.chain.from_iterable(
+            itertools.combinations(nodes, r) for r in range(len(nodes) + 1)
+        ):
             if 0 in cut:
                 continue
             if self._validate_cut(cut, G_dstar, Jp, Jm):
                 yield cut
         return
-                
-            
 
 
 def debug_vars(Jp, Jm, idx_to_var, var_map):
@@ -500,3 +535,13 @@ def debug_vars(Jp, Jm, idx_to_var, var_map):
             print(f"Index {k} (Jm) corresponds to {var_map[idx_to_var[k]].name}")
         else:
             print("Index 0 (Jm) is the dummy variable")
+
+
+def get_constraint(transformed_block, disjunction):
+    if disjunction in transformed_block.private_data().disjunction_constraints_map:
+        return transformed_block.private_data().disjunction_constraints_map[disjunction]
+    else:
+        raise ValueError(
+            f"Disjunction {disjunction} was not used for cut generation by "
+            f"a call to gdp.reverse_polar_enumeration_cuts on model {transformed_block}"
+        )
