@@ -415,8 +415,8 @@ class ReversePolarEnumerationCuts(Transformation):
                                         # print(
                                         #     f"had path to 0; double branch for {k=}"
                                         # )
-                                        cuts_stack.append((X + [k], Xbar))
                                         cuts_stack.append((X, Xbar + [k]))
+                                        cuts_stack.append((X + [k], Xbar))
                                     else:
                                         # print(
                                         #     f"no path to 0; single branch for {k=}"
