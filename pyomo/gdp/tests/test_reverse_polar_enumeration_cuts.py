@@ -51,6 +51,8 @@ from pyomo.repn.linear import LinearRepnVisitor
 from pyomo.repn.quadratic import QuadraticRepnVisitor
 from pyomo.repn.util import OrderedVarRecorder
 from pyomo.core.base import SortComponents
+from pyomo.common.dependencies import networkx_available
+import pyomo.common.unittest as unittest
 
 from pyomo.gdp import Disjunct, Disjunction, GDP_Error
 import pyomo.gdp.plugins.hull as hull_module
@@ -58,7 +60,6 @@ import pyomo.gdp.tests.models as models
 import pyomo.gdp.tests.common_tests as ct
 
 from pyomo.gdp.plugins.reverse_polar_enumeration_cuts import get_constraint
-
 
 # The pyomo expression system collapses 1.0*x into x, which results in
 # floating-point 1.0 being converted to integer 1 when
@@ -68,6 +69,7 @@ ALMOST_ONE = 1.00000000000001
 
 
 class TestReversePolarEnumerationCuts(unittest.TestCase):
+    @unittest.skipUnless(networkx_available, "Networkx is not available")
     def test_example(self):
         m = ConcreteModel()
         m.x1 = Var(bounds=(0, 20))
@@ -95,6 +97,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         )
         # TODO: check more than the NEEC cut here
 
+    @unittest.skipUnless(networkx_available, "Networkx is not available")
     def test_linearly_many_easy(self):
         # Easier version: 4 variables, 3 cuts
         # After preprocessing the disjunction should look exactly the same,
@@ -137,6 +140,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         self.assertEqual(1, cons[2].lower)
         self.assertIsNone(cons[2].upper)
 
+    @unittest.skipUnless(networkx_available, "Networkx is not available")
     def test_linearly_many_medium(self):
         # Constructing the model according to this pattern with n
         # variables, the resulting model should have exactly n/2 + 1
@@ -242,6 +246,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
     # TODO:
     # - test a big case for linearly many
 
+    @unittest.skipUnless(networkx_available, "Networkx is not available")
     def test_not_Jm_or_Jp(self):
         # Make sure we don't choke when a variable has negative and zero
         # coefficients, but no positive ones.

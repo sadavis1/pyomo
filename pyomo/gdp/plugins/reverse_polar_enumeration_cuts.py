@@ -28,7 +28,6 @@ from math import log, exp
 
 from pyomo.common.dependencies import networkx as nx, networkx_available
 
-
 logger = logging.getLogger(__name__)
 EPS = 1e-6
 
