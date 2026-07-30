@@ -265,6 +265,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         # does not raise exception
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
 
+    @unittest.skipUnless(networkx_available, "Networkx is not available")
     def test_exponentially_many_easy(self):
         # For this pattern, a disjunction on n variables with n/2
         # disjuncts leads to a total of 2^{n/2} - 1 cuts. Here we have
