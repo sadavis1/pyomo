@@ -18,6 +18,7 @@ from pyomo.common.autoslots import AutoSlots
 from pyomo.common.collections import ComponentMap, ComponentSet
 from pyomo.common.config import ConfigDict, ConfigValue
 from pyomo.common.modeling import unique_component_name
+from pyomo.common.enums import Enum
 from pyomo.core import Block, Constraint
 from pyomo.gdp import Disjunct, Disjunction, GDP_Error
 from pyomo.gdp.util import get_gdp_tree
@@ -165,12 +166,6 @@ class ReversePolarEnumerationCuts(Transformation):
                 elif k in Jm:
                     alpha = -exp(delta[k])
                 expr += alpha * var
-        # b = disj.parent_block()
-        # if not hasattr(b, '_reverse_polar_enumeration_cuts'):
-        #     b._reverse_polar_enumeration_cuts = Constraint(NonNegativeIntegers)
-        # b._reverse_polar_enumeration_cuts[len(b._reverse_polar_enumeration_cuts)] = (
-        #     expr >= 1
-        # )
         if disj in instance.private_data().disjunction_constraints_map:
             con = instance.private_data().disjunction_constraints_map[disj]
         else:
@@ -178,7 +173,7 @@ class ReversePolarEnumerationCuts(Transformation):
             xf_block.add_component(unique_component_name(xf_block, disj.name), con)
             instance.private_data().disjunction_constraints_map[disj] = con
         con[len(con)] = expr >= 1
-        print(f"Added a cut: {str(expr >= 1)}")
+        # print(f"Added a cut: {str(expr >= 1)}\n=========================")
 
     def _near_match(self, d1, d2):
         for k, v in d1.items():
@@ -188,14 +183,21 @@ class ReversePolarEnumerationCuts(Transformation):
 
     def _generate_cuts(self, instance, xf_block, disj, tree):
         num_cuts = self._config.num_cuts
+        if num_cuts == 0:
+            return
+        num_skip = self._config.num_skip
 
-        # Bijectively label the vars as I find them since I need a dummy variable zero. (
-        # x_0 is always treated as 1). This can probably be eliminated later
+        # Bijectively label the vars as I find them since I need a dummy
+        # variable zero. (x_0 is always treated as 1). This can
+        # probably be eliminated later
         idx_to_var = {0: None}
         var_to_idx = ComponentMap()
         coef = {}  # coef[(k, t)] = d_k^t
-        Jm = {0}  # {k | \forall t d_k^t < 0} \cup {0}
-        Jp = set()  # {k | \exists t d_k^t > 0}
+        # These should have fast lookup, but they also need to have
+        # stable iteration order for testing and consistency, so I will
+        # use a dict to None instead of a set or list
+        Jm = {0: None}  # {k | \forall t d_k^t < 0} \cup {0}
+        Jp = {}  # {k | \exists t d_k^t > 0}
         disjunct_idx = 1
 
         # Preprocess
@@ -205,7 +207,7 @@ class ReversePolarEnumerationCuts(Transformation):
         for d in tree.children(disj):
             con = next(d.component_data_objects(Constraint))
             repn = visitor.walk_expression(con.body)
-            if repn.nonlinear:  # TODO move this?
+            if repn.nonlinear:
                 raise GDP_Error(
                     f"Disjunction transformed by {self.transformation_name} "
                     "must not have a nonlinear constraint."
@@ -244,45 +246,47 @@ class ReversePolarEnumerationCuts(Transformation):
                     idx = var_to_idx[v]
 
                 if c > 0:
-                    Jp.add(idx)
-                    Jm.discard(idx)
+                    Jp[idx] = None
+                    Jm.pop(idx, None)
                 # NOTE: a variable can be neither Jp nor Jm at this
                 # stage, but this will put such vars in Jm since we
                 # aren't catching zero coefficients. We handle this
                 # below
                 elif c < 0:
                     if idx not in Jp:
-                        Jm.add(idx)
+                        Jm[idx] = None
 
                 coef[(idx, disjunct_idx)] = c
 
             disjunct_idx += 1
 
-        # Fill in dummy/default entries. Eliminate this later to save effort when sparse
+        # Keep these sorted. Only Jp could fail to be here (since items
+        # can be added late if they were initially in Jm).
+        Jp = dict(sorted(Jp.items()))
+
+        # Fill in default entries. Eliminate this later to save effort when sparse
         for t in range(1, disjunct_idx):
-            coef[0, t] = 1  # or -1?
+            coef[0, t] = 1
             for j in range(1, len(idx_to_var)):
                 if (j, t) not in coef:
                     coef[j, t] = 0
                     if j in Jm:
-                        # TODO verify this is actually valid. In this
-                        # case, we effectively delete this variable
-                        # completely from the disjunction. I believe
-                        # this should be correct in light of Connor's
-                        # mixed-sign variables lemma. In any case the
-                        # variable certainly cannot go into Jm.
+                        # In this case, we effectively delete this
+                        # variable completely from the disjunction. It
+                        # is never necessary to include it on a
+                        # generated cut.
+
                         # TODO: This _is_ the only way zero coefficients
-                        # can arise (ie, they don't show up in the
+                        # can arise (ie, they never show up in the
                         # repn), right?
-                        Jm.discard(j)
-        # Additional preprocessing (sparse positive intersections lemma
-        # from Connor): Eliminate all-negatives disjuncts (they would be
-        # empty), and perform various alterations to the
-        # coefficients. In the end d[k, t] has a block form consisting
-        # of a square diagonal matrix (possibly taller than the
-        # original, since the index of t is replaced with Jp), and below
-        # that a block of all negative values corresponding to variables
-        # in Jm.
+                        Jm.pop(j, None)
+        # Preprocessing (sparse positive intersections lemma from
+        # Connor): Recreate the disjunction to have one disjunct for
+        # each Jp variable, performing various alterations to the
+        # coefficients. In the end d_k^t has a block form consisting of
+        # a square diagonal matrix of size |Jp|x|Jp| with positive
+        # diagonal values, and below that a block of all negative values
+        # corresponding to variables in Jm.
         coef_new = {}
         for j in Jp:
             for k in Jp:
@@ -302,228 +306,212 @@ class ReversePolarEnumerationCuts(Transformation):
                     * coef_new[j, j]
                 )
         coef = coef_new
-        debug_vars(Jp, Jm, idx_to_var, visitor.var_map)
-        # for k in Jm:
-        #     for j in Jp:
-        #         print(f"coef[{k},{j}]={coef[k,j]} (supposed to be <0; this is {("true" if coef[k, j]<0 else "false")})")
+        # debug_vars(Jp, Jm, idx_to_var, visitor.var_map)
+
         # First: NEEC cut
-
-        # For later, we will attempt to avoid taking the logarithm;
-        # i.e., we will try to work on the set S_0^# instead of D^#
-        alpha = {}
+        # TODO: remove use of logarithms throughout
+        delta = {}
         for j in Jp:
-            alpha[j] = coef[j, j]
+            delta[j] = log(coef[j, j])
         for k in Jm:
-            alpha[k] = -1 * min([abs(coef[k, j]) for j in Jp])
+            delta[k] = log(min([abs(coef[k, j]) for j in Jp]))
 
-        # this is correct, right?
-        assert alpha[0] == -1
+        if not num_skip:
+            self._add_cut(
+                instance, xf_block, delta, disj, idx_to_var, visitor.var_map, Jp, Jm
+            )
+        # breakpoint()
+        # print("=====================")
+        added_cuts = 1
+        if num_cuts == 1:
+            return
 
         cost = {}
         for j in Jp:
             for k in Jm:
-                print(f"here coef[{k}, {j}]={coef[k,j]}, coef[{j}, {j}]={coef[j,j]}")
+                # print(f"here coef[{k}, {j}]={coef[k,j]}, coef[{j}, {j}]={coef[j,j]}")
                 cost[j, k] = log(abs(coef[k, j]) / coef[j, j])
-                print(f"cost[{j}, {k}]={cost[j, k]}")
-        delta = {k: log(abs(v)) for k, v in alpha.items()}
-        # vertices already added
-        used_list = [delta]
-        # vertices to construct G_delta from
+                # print(f"cost[{j}, {k}]={cost[j, k]}")
+
+        # State machine: perform breadth-first search on D^# by using
+        # the properties of the auxiliary graph G_dstar at each vertex
+        # dstar in D^# to find vertices adjacent to dstar, checking each
+        # against used_list in case they are not new.
         vertex_queue = [delta]
-        self._add_cut(
-            instance, xf_block, delta, disj, idx_to_var, visitor.var_map, Jp, Jm
-        )
-        # breakpoint()
-        print("=====================")
-        added_cuts = 1
+        used_list = [delta]
+        # indexes into Jm
+        k0 = 0
+        # tuples of lists: (X, Xbar)
+        cuts_stack = []
 
-        while vertex_queue and (not num_cuts or added_cuts <= num_cuts):
-            print(f"before popping, {len(vertex_queue)=}")
-            dstar = vertex_queue.pop(0)
-            print(f"working form vertex {dstar=}")
-            print("calling _enumerate_graph_cuts")
-            # for cut in self._enumerate_graph_cuts_exhaustive_debug(dstar, Jp, Jm, cost):
-            for cut in self._enumerate_graph_cuts(dstar, Jp, Jm, cost):
-                print(f"Using cut: {cut}")
-                l = min(
-                    [
-                        cost[j, k] - dstar[k] + dstar[j]
-                        for j in Jp
-                        for k in Jm
-                        if k in cut and j not in cut
-                    ]
-                )
-                print(f"Calculated lambda*={l}")
-                d_candidate = {k: (v + l if k in cut else v) for k, v in dstar.items()}
-                # floating point...
-                found_near_match = False
-                for d in used_list:
-                    if self._near_match(d_candidate, d):
-                        print("was near match")
-                        found_near_match = True
-                        break
-                if found_near_match:
+        class Targets(Enum):
+            get_vertex = 0
+            start_graph_cut = 1
+            graph_cuts_inner = 2
+            mip_cut = 3
+
+        jump_target = Targets.get_vertex
+
+        while True:
+            match jump_target:
+                case Targets.get_vertex:
+                    if not vertex_queue:
+                        return  # all cuts generated
+                    dstar = vertex_queue.pop(0)
+                    G_dstar = nx.Graph()
+                    G_dstar.add_nodes_from(Jp)
+                    G_dstar.add_nodes_from(Jm)
+                    for j in Jp:
+                        for k in Jm:
+                            if abs(dstar[k] - dstar[j] - cost[j, k]) < EPS:
+                                G_dstar.add_edge(k, j)
+
+                    jump_target = Targets.start_graph_cut
                     continue
-                vertex_queue.append(d_candidate)
-                print(f"after appending, {len(vertex_queue)=}")
-                self._add_cut(
-                    instance,
-                    xf_block,
-                    d_candidate,
-                    disj,
-                    idx_to_var,
-                    visitor.var_map,
-                    Jp,
-                    Jm,
-                )
-                used_list.append(d_candidate)
-                added_cuts += 1
-                # breakpoint()
-                print("=====================")
-            print("finished call to _enumerate_graph_cuts")
-            print(f"after enumerate_graph_cuts, {len(vertex_queue)=}")
-            # breakpoint()
-            print("=====================")
 
-    # generator yielding graph cuts (we yield the X sets) in G_dstar
-    def _enumerate_graph_cuts(self, dstar, Jp, Jm, cost):
-        G_dstar = nx.DiGraph()
-        G_dstar.add_nodes_from(Jp)
-        G_dstar.add_nodes_from(Jm)
-        for j in Jp:
-            for k in Jm:
-                if abs(dstar[k] - dstar[j] - cost[j, k]) < EPS:
-                    G_dstar.add_edge(k, j)
+                case Targets.start_graph_cut:
+                    if k0 == len(Jm) - 1:
+                        k0 = 0
+                        jump_target = Targets.get_vertex
+                        continue
+                    k0 = k0 + 1  # skip 0
+                    Xbar = []
+                    it = iter(Jm)
+                    for i in range(k0):
+                        Xbar.append(next(it))
+                    X = [next(it)]
+                    cuts_stack.append((X, Xbar))
+                    jump_target = Targets.graph_cuts_inner
+                    continue
 
-        # Ternary Booleans in honor of George Boole. True means in X,
-        # False means in X_bar, None means not yet assigned
-        for k0 in Jm:
-            if k0 == 0:
-                continue
-            print(f"iterating {k0=}")
-            label = {}
-            for i in Jm:
-                if i < k0:
-                    label[i] = False
-                elif i == k0:
-                    label[i] = True
-                else:
-                    label[i] = None
-            for i in Jp:
-                label[i] = None
-            yield from self._branch(G_dstar, label, Jp, Jm)
-        return
+                case Targets.graph_cuts_inner:
+                    X, Xbar = cuts_stack.pop(-1)
+                    # Forcing rules that necessarily put certain nodes in X
+                    for k in Jm:
+                        if k in X:
+                            for j in G_dstar.neighbors(k):
+                                # these are in Jp only
+                                X.append(j)
+                                # print("did forcing rule 1")
+                    # Going forward we often need access to G_dstar[N_0 \ X]
+                    G_working = G_dstar.copy()
+                    G_working.remove_nodes_from(X)
+                    for k in Jm:
+                        if k not in X and k not in Xbar:
+                            for j in G_dstar.neighbors(k):
+                                if j in X and not nx.has_path(G_working, k, 0):
+                                    X.append(k)
+                                    if k in G_working.nodes:
+                                        G_working.remove_node(k)
+                                    # print("did forcing rule 2")
+                                    break
+                    for j in Jp:
+                        if j in X:
+                            done = False
+                            for k in G_dstar.neighbors(j):
+                                # these are in Jm only
+                                if k not in X and k not in Xbar:
+                                    if nx.has_path(G_working, k, 0):
+                                        # print(
+                                        #     f"had path to 0; double branch for {k=}"
+                                        # )
+                                        cuts_stack.append((X + [k], Xbar))
+                                        cuts_stack.append((X, Xbar + [k]))
+                                    else:
+                                        # print(
+                                        #     f"no path to 0; single branch for {k=}"
+                                        # )
+                                        cuts_stack.append((X + [k], Xbar))
+                                    done = True
+                                    break
+                            if done:
+                                # we will see the other neighbors on
+                                # subsequent iterations
+                                continue  # jump_target is still graph_cuts_inner
+                    # from here on any remaining elements of Jp and Jm
+                    # are treated as part of Xbar
+                    if self._validate_cut(X, G_dstar, G_working, Jp, Jm):
+                        jump_target = Targets.mip_cut
+                        continue
+                    if not cuts_stack:
+                        jump_target = Targets.start_graph_cut
+                    # otherwise return to graph_cuts_inner
+                    continue
 
-    def _branch(self, G_dstar, label, Jp, Jm):
-        print("calling branch()")
-        print(f"here {G_dstar.edges=}")
-        print(f"here initially {label=}")
-        # Here we will mostly deal with G_dstar[N_0 \ X]. Also we only
-        # check for undirected paths.
-        G_working = G_dstar.to_undirected(as_view=False)
-        for k, v in label.items():
-            if v:
-                G_working.remove_node(k)
-        # Forcing rules that necessarily put certain nodes in X
-        for k in Jm:
-            if label[k]:
-                for j in G_dstar.successors(k):
-                    print("did forcing rule 1")
-                    label[j] = True
-                    if j in G_working.nodes:
-                        G_working.remove_node(j)
-        for k in Jm:
-            if label[k] is None:
-                for j in G_dstar.successors(k):
-                    if label[j]:
-                        if not nx.has_path(G_working, k, 0):
-                            print("did forcing rule 2")
-                            label[k] = True
-                            if k in G_working.nodes:
-                                G_working.remove_node(k)
-                        break
+                # This could just be inlined to underneath
+                # `if self._validate_cut(...)` but it's conceptually
+                # distinct so let's maintain some semblance of order
+                # by moving it here.
+                case Targets.mip_cut:
+                    # occurs regardless of how we exit this
+                    jump_target = (
+                        Targets.graph_cuts_inner
+                        if cuts_stack
+                        else Targets.start_graph_cut
+                    )
 
-        for j in Jp:
-            if label[j]:
-                # these are in Jm only
-                for k in G_dstar.predecessors(j):
-                    if label[k] is None:
-                        if nx.has_path(G_working, k, 0):
-                            # I will trust that this is never exponential time
-                            print(f"had path to 0, doing a double branch for {k=}")
-                            l1 = label.copy()
-                            l1[k] = True
-                            l2 = label.copy()
-                            l2[k] = False
-                            yield from self._branch(G_dstar, l1, Jp, Jm)
-                            yield from self._branch(G_dstar, l2, Jp, Jm)
-                            return
-                        else:
-                            l1 = label.copy()
-                            l1[k] = True
-                            yield from self._branch(G_dstar, l1, Jp, Jm)
-                            return
-        # no unassigned neighbors to any j in X intersect Jp
-        for k in label.keys():
-            if label[k] is None:
-                label[k] = False
-        cut = set()
-        for k in label.keys():
-            if label[k]:
-                cut.add(k)
-        if self._validate_cut(cut, G_dstar, Jp, Jm):
-            print(f"Yielding valid cut {cut}")
-            yield cut
-            return
-        print(f"Cut {cut} failed validation")
-        return
+                    lstar = min(
+                        [
+                            cost[j, k] - dstar[k] + dstar[j]
+                            for j in Jp
+                            for k in Jm
+                            if k in X and j not in X
+                        ]
+                    )
+                    # print(f"Calculated lambda*={lstar}")
+                    d_candidate = {
+                        k: (v + lstar if k in X else v) for k, v in dstar.items()
+                    }
+                    # floating point...
+                    done = False
+                    for d in used_list:
+                        if self._near_match(d_candidate, d):
+                            # near match to a vertex already used: do not add cut
+                            # print("was near match")
+                            done = True
+                            break
+                    if done:
+                        continue
+                    vertex_queue.append(d_candidate)
+                    used_list.append(d_candidate)
+                    added_cuts += 1
+                    if added_cuts > num_skip:
+                        self._add_cut(
+                            instance,
+                            xf_block,
+                            d_candidate,
+                            disj,
+                            idx_to_var,
+                            visitor.var_map,
+                            Jp,
+                            Jm,
+                        )
+                    if added_cuts == num_cuts:
+                        # early termination
+                        return
+                    continue
 
-    def _validate_cut(self, cut, G_dstar, Jp, Jm):
-        cut_complement = set()
-        G_X = G_dstar.to_undirected(as_view=False)
-        G_Xbar = G_dstar.to_undirected(as_view=False)
-        for j in itertools.chain(Jp, Jm):
-            if j in cut:
-                G_Xbar.remove_node(j)
-            else:
-                G_X.remove_node(j)
-                cut_complement.add(j)
+    def _validate_cut(self, cut, G_dstar, G_Xbar, Jp, Jm):
+        # print(f"validating cut {cut}")
+        G_X = G_dstar.copy()
+        G_X.remove_nodes_from(G_Xbar.nodes)
         # (1) and (3) are known to be able to fail
         # (3) X intersects Jm and Xbar intersects Jp
-        if Jm.isdisjoint(cut) or Jp.isdisjoint(cut_complement):
-            print("failed: X disjoint from Jm or Xbar disjoint from Jp")
+        if set(Jm).isdisjoint(set(cut)) or set(Jp).isdisjoint(set(G_Xbar.nodes)):
+            # print("failed: X disjoint from Jm or Xbar disjoint from Jp")
             return False
         # (1) X and Xbar induce connected subgraphs of G_dstar
         if not nx.is_connected(G_Xbar) or not nx.is_connected(G_X):
-            print("failed: G[X] or G[Xbar] not connected")
+            # print("failed: G[X] or G[Xbar] not connected")
             return False
 
         # (2) No directed edges run from X to Xbar
         # This is probably not a possible failure case, but let's check just in case.
         for src, dst in G_dstar.edges:
-            if src in cut and dst in cut_complement:
-                print("failed: there was an edge of G going from X to Xbar")
+            if src in cut and src in Jm and dst not in cut and dst in Jp:
+                # print("failed: there was an edge of G going from X to Xbar")
                 return False
         return True
-
-    def _enumerate_graph_cuts_exhaustive_debug(self, dstar, Jp, Jm, cost):
-        G_dstar = nx.DiGraph()
-        G_dstar.add_nodes_from(Jp)
-        G_dstar.add_nodes_from(Jm)
-        for j in Jp:
-            for k in Jm:
-                if abs(dstar[k] - dstar[j] - cost[j, k]) < EPS:
-                    G_dstar.add_edge(k, j)
-        nodes = list(Jp.union(Jm))
-        # power set
-        for cut in itertools.chain.from_iterable(
-            itertools.combinations(nodes, r) for r in range(len(nodes) + 1)
-        ):
-            if 0 in cut:
-                continue
-            if self._validate_cut(cut, G_dstar, Jp, Jm):
-                yield cut
-        return
 
 
 def debug_vars(Jp, Jm, idx_to_var, var_map):
@@ -531,10 +519,10 @@ def debug_vars(Jp, Jm, idx_to_var, var_map):
     for j in Jp:
         print(f"Index {j} (Jp) corresponds to {var_map[idx_to_var[j]].name}")
     for k in Jm:
-        if k != 0:
-            print(f"Index {k} (Jm) corresponds to {var_map[idx_to_var[k]].name}")
-        else:
+        if k == 0:
             print("Index 0 (Jm) is the dummy variable")
+        else:
+            print(f"Index {k} (Jm) corresponds to {var_map[idx_to_var[k]].name}")
 
 
 def get_constraint(transformed_block, disjunction):

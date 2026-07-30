@@ -87,7 +87,6 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
 
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
         cons = get_constraint(m, m.d)
-
         assertExpressionsEqual(
             self,
             cons[0].body,
@@ -128,18 +127,12 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         self.assertEqual(1, cons[0].lower)
         self.assertIsNone(cons[0].upper)
         assertExpressionsEqual(
-            self,
-            cons[1].body,
-            3.0 * m.x1 + m.x2 - 3.0 * m.x3 - 3.0 * m.x4,
-            places=8,
+            self, cons[1].body, 3.0 * m.x1 + m.x2 - 3.0 * m.x3 - 3.0 * m.x4, places=8
         )
         self.assertEqual(1, cons[1].lower)
         self.assertIsNone(cons[1].upper)
         assertExpressionsEqual(
-            self,
-            cons[2].body,
-            4.0 * m.x1 + m.x2 - 3.0 * m.x3 - 4.0 * m.x4,
-            places=8,
+            self, cons[2].body, 4.0 * m.x1 + m.x2 - 3.0 * m.x3 - 4.0 * m.x4, places=8
         )
         self.assertEqual(1, cons[2].lower)
         self.assertIsNone(cons[2].upper)
@@ -173,10 +166,10 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[0].body,
-            m.x4
-            + m.x1
+            m.x1
             + m.x2
             + m.x3
+            + m.x4
             - ALMOST_ONE * m.x5
             - ALMOST_ONE * m.x6
             - ALMOST_ONE * m.x7
@@ -188,10 +181,10 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[1].body,
-            m.x4
-            + 5.0 * m.x1
+            5.0 * m.x1
             + 5.0 * m.x2
             + m.x3
+            + m.x4
             - 5.0 * m.x5
             - 5.0 * m.x6
             - 5.0 * m.x7
@@ -203,10 +196,10 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[2].body,
-            m.x4
-            + 6.0 * m.x1
+            6.0 * m.x1
             + 6.0 * m.x2
             + m.x3
+            + m.x4
             - 5.0 * m.x5
             - 6.0 * m.x6
             - 6.0 * m.x7
@@ -218,10 +211,10 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[3].body,
-            m.x4
-            + 7.0 * m.x1
+            7.0 * m.x1
             + 7.0 * m.x2
             + m.x3
+            + m.x4
             - 5.0 * m.x5
             - 6.0 * m.x6
             - 7.0 * m.x7
@@ -233,10 +226,10 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[4].body,
-            m.x4
-            + 8.0 * m.x1
+            8.0 * m.x1
             + 8.0 * m.x2
             + m.x3
+            + m.x4
             - 5.0 * m.x5
             - 6.0 * m.x6
             - 7.0 * m.x7
@@ -293,7 +286,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[0].body,
-            +m.x1
+            m.x1
             + m.x2
             + m.x3
             - ALMOST_ONE * m.x4
@@ -304,7 +297,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[1].body,
-            +2.0 * m.x1
+            2.0 * m.x1
             + m.x2
             + m.x3
             - 2.0 * m.x4
@@ -315,7 +308,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[2].body,
-            +m.x1
+            m.x1
             + 2.0 * m.x2
             + m.x3
             - ALMOST_ONE * m.x4
@@ -326,7 +319,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[3].body,
-            +m.x1
+            m.x1
             + m.x2
             + 2.0 * m.x3
             - ALMOST_ONE * m.x4
@@ -337,7 +330,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[4].body,
-            +2.0 * m.x1
+            2.0 * m.x1
             + 2.0 * m.x2
             + m.x3
             - 2.0 * m.x4
@@ -348,7 +341,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[5].body,
-            +2.0 * m.x1
+            2.0 * m.x1
             + m.x2
             + 2.0 * m.x3
             - 2.0 * m.x4
@@ -359,7 +352,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         assertExpressionsEqual(
             self,
             cons[6].body,
-            +m.x1
+            m.x1
             + 2.0 * m.x2
             + 2.0 * m.x3
             - ALMOST_ONE * m.x4
