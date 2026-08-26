@@ -338,22 +338,15 @@ class ReversePolarEnumerationCuts(Transformation):
         # against used_list in case they are not new.
         vertex_queue = [delta]
         used_list = [delta]
-        # indexes into Jm
-        k0 = 0
+        # indexes into Jm. Start at sentinel value
+        k0 = len(Jm) - 1
         # tuples of lists: (X, Xbar)
-        cuts_stack = []
-
-        class Targets(Enum):
-            get_vertex = 0
-            start_graph_cut = 1
-            graph_cuts_inner = 2
-            mip_cut = 3
-
-        jump_target = Targets.get_vertex
+        cuts_queue = []
 
         while True:
-            match jump_target:
-                case Targets.get_vertex:
+            if not cuts_queue:
+                if k0 == len(Jm) - 1:
+                    # get a new vertex and reset k0
                     if not vertex_queue:
                         return  # all cuts generated
                     dstar = vertex_queue.pop(0)
@@ -364,91 +357,67 @@ class ReversePolarEnumerationCuts(Transformation):
                         for k in Jm:
                             if abs(dstar[k] - dstar[j] - cost[j, k]) < EPS:
                                 G_dstar.add_edge(k, j)
-
-                    jump_target = Targets.start_graph_cut
+                    k0 = 0
                     continue
-
-                case Targets.start_graph_cut:
-                    if k0 == len(Jm) - 1:
-                        k0 = 0
-                        jump_target = Targets.get_vertex
-                        continue
+                else:
+                    # start a new [set of] graph cuts
                     k0 = k0 + 1  # skip 0
                     Xbar = []
                     it = iter(Jm)
                     for i in range(k0):
                         Xbar.append(next(it))
                     X = [next(it)]
-                    cuts_stack.append((X, Xbar))
-                    jump_target = Targets.graph_cuts_inner
+                    cuts_queue.append((X, Xbar))
                     continue
-
-                case Targets.graph_cuts_inner:
-                    X, Xbar = cuts_stack.pop(-1)
-                    # Forcing rules that necessarily put certain nodes in X
-                    for k in Jm:
-                        if k in X:
-                            for j in G_dstar.neighbors(k):
-                                # these are in Jp only
-                                X.append(j)
-                                # print("did forcing rule 1")
-                    # Going forward we often need access to G_dstar[N_0 \ X]
-                    G_working = G_dstar.copy()
-                    G_working.remove_nodes_from(X)
-                    for k in Jm:
-                        if k not in X and k not in Xbar:
-                            for j in G_dstar.neighbors(k):
-                                if j in X and not nx.has_path(G_working, k, 0):
-                                    X.append(k)
-                                    if k in G_working.nodes:
-                                        G_working.remove_node(k)
-                                    # print("did forcing rule 2")
-                                    break
-                    for j in Jp:
-                        if j in X:
-                            done = False
-                            for k in G_dstar.neighbors(j):
-                                # these are in Jm only
-                                if k not in X and k not in Xbar:
-                                    if nx.has_path(G_working, k, 0):
-                                        # print(
-                                        #     f"had path to 0; double branch for {k=}"
-                                        # )
-                                        cuts_stack.append((X, Xbar + [k]))
-                                        cuts_stack.append((X + [k], Xbar))
-                                    else:
-                                        # print(
-                                        #     f"no path to 0; single branch for {k=}"
-                                        # )
-                                        cuts_stack.append((X + [k], Xbar))
-                                    done = True
-                                    break
-                            if done:
-                                # we will see the other neighbors on
-                                # subsequent iterations
-                                continue  # jump_target is still graph_cuts_inner
-                    # from here on any remaining elements of Jp and Jm
-                    # are treated as part of Xbar
-                    if self._validate_cut(X, G_dstar, G_working, Jp, Jm):
-                        jump_target = Targets.mip_cut
-                        continue
-                    if not cuts_stack:
-                        jump_target = Targets.start_graph_cut
-                    # otherwise return to graph_cuts_inner
-                    continue
-
-                # This could just be inlined to underneath
-                # `if self._validate_cut(...)` but it's conceptually
-                # distinct so let's maintain some semblance of order
-                # by moving it here.
-                case Targets.mip_cut:
-                    # occurs regardless of how we exit this
-                    jump_target = (
-                        Targets.graph_cuts_inner
-                        if cuts_stack
-                        else Targets.start_graph_cut
-                    )
-
+            else:
+                # there are candidate graph cuts in the queue; process them
+                X, Xbar = cuts_queue.pop(-1)
+                # Forcing rules that necessarily put certain nodes in X
+                for k in Jm:
+                    if k in X:
+                        for j in G_dstar.neighbors(k):
+                            # these are in Jp only
+                            X.append(j)
+                            # print("did forcing rule 1")
+                # Going forward we often need access to G_dstar[N_0 \ X]
+                G_working = G_dstar.copy()
+                G_working.remove_nodes_from(X)
+                for k in Jm:
+                    if k not in X and k not in Xbar:
+                        for j in G_dstar.neighbors(k):
+                            if j in X and not nx.has_path(G_working, k, 0):
+                                X.append(k)
+                                if k in G_working.nodes:
+                                    G_working.remove_node(k)
+                                # print("did forcing rule 2")
+                                break
+                for j in Jp:
+                    if j in X:
+                        done = False
+                        for k in G_dstar.neighbors(j):
+                            # these are in Jm only
+                            if k not in X and k not in Xbar:
+                                if nx.has_path(G_working, k, 0):
+                                    # print(
+                                    #     f"had path to 0; double branch for {k=}"
+                                    # )
+                                    cuts_queue.append((X, Xbar + [k]))
+                                    cuts_queue.append((X + [k], Xbar))
+                                else:
+                                    # print(
+                                    #     f"no path to 0; single branch for {k=}"
+                                    # )
+                                    cuts_queue.append((X + [k], Xbar))
+                                done = True
+                                break
+                        if done:
+                            # we will see the other neighbors on
+                            # subsequent iterations
+                            continue  # cuts_queue is still populated
+                # from here on any remaining elements of Jp and Jm
+                # are treated as part of Xbar
+                if self._validate_cut(X, G_dstar, G_working, Jp, Jm):
+                    # perform mip cut
                     lstar = min(
                         [
                             cost[j, k] - dstar[k] + dstar[j]
@@ -488,8 +457,11 @@ class ReversePolarEnumerationCuts(Transformation):
                     if added_cuts == num_cuts:
                         # early termination
                         return
-                    continue
-
+                # depending on whether we used up cuts_queue, either get
+                # a new initial cut or continue processing
+                continue
+                    
+            
     def _validate_cut(self, cut, G_dstar, G_Xbar, Jp, Jm):
         # print(f"validating cut {cut}")
         G_X = G_dstar.copy()
