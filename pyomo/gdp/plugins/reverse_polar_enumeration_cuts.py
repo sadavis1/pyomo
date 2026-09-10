@@ -44,16 +44,22 @@ Block.register_private_data_initializer(_ReversePolarEnumerationCutsData)
 
 @TransformationFactory.register(
     'gdp.reverse_polar_enumeration_cuts',
-    doc="Add cuts to a GDP with 'simple disjunctions', according to the reverse polar "
-    "vertex enumeration algorithm of [TODO REF]. A simple disjunction is one in which "
-    "each disjunct contains only exactly one linear inequality on nonnegative "
-    "variables.",
+    doc="Add cuts to a GDP with 'simple disjunctions', according to the "
+    "reverse-polar vertex enumeration algorithm of [reference "
+    "forthcoming]. A simple disjunction is one in which each disjunct "
+    "contains only exactly one linear inequality on "
+    "nonnegative-constrained variables, which is outwards facing in the "
+    "sense that it can be rewritten in the form d . x >= 1."
+
+,
 )
 class ReversePolarEnumerationCuts(Transformation):
-    """
-    Add cuts to a GDP with 'simple disjunctions', according to the reverse polar
-    vertex enumeration algorithm of [TODO REF]. A simple disjunction is one in which
-    each disjunct contains only exactly one linear inequality on nonnegative variables.
+    """Add cuts to a GDP with 'simple disjunctions', according to the
+    reverse-polar vertex enumeration algorithm of [reference
+    forthcoming]. A simple disjunction is one in which each disjunct
+    contains only exactly one linear inequality on
+    nonnegative-constrained variables, which is outwards facing in the
+    sense that it can be rewritten in the form d . x >= 1.
     """
 
     transformation_name = 'reverse_polar_enumeration_cuts'
@@ -77,7 +83,6 @@ class ReversePolarEnumerationCuts(Transformation):
         'num_cuts',
         ConfigValue(
             default=None,
-            # domain=int,
             description="number of cuts to generate",
             doc="""
             Maximum number of cuts to generate. If None is passed, keep going until there
@@ -108,7 +113,8 @@ class ReversePolarEnumerationCuts(Transformation):
 
     def _apply_to(self, instance, **kwds):
         if not networkx_available:
-            raise GDP_Error("Networkx is required for this transformation.")
+            raise GDP_Error("Networkx is required for this transformation, but it could "
+                            "not be imported.")
         if instance.ctype not in (Block, Disjunct):
             raise GDP_Error(
                 "Transformation called on %s of type %s. 'instance'"
@@ -135,12 +141,14 @@ class ReversePolarEnumerationCuts(Transformation):
 
     def _validate_disjunction(self, disj, tree):
         if tree.root_disjunct(disj) is not None:
-            raise GDP_Error("we don't support nested for now")
+            raise GDP_Error("Nested disjunctions are not supported for "
+                            f"{self.transformation_name}")
         for b in tree.children(disj):
             found = False
             for c in b.component_data_objects(SubclassOf(ActiveComponent)):
-                # no active components except exactly one constraint are permitted.
-                # Non-active things like params and vars are fine.
+                # To be safe, no active components except exactly one
+                # constraint are permitted.  Non-active things like
+                # params and vars are fine.
                 if found or c.ctype is not Constraint:
                     raise GDP_Error(
                         "No active components except exactly one constraint "
@@ -149,7 +157,7 @@ class ReversePolarEnumerationCuts(Transformation):
                     )
                 found = True
             if not found:
-                # probably an error? It's trivial in any case.
+                # Likely user error. It's trivial in any case.
                 raise GDP_Error(
                     "Empty disjunct on disjunction transformed by "
                     f"{self.transformation_name} - no cuts are possible."
@@ -172,7 +180,6 @@ class ReversePolarEnumerationCuts(Transformation):
             xf_block.add_component(unique_component_name(xf_block, disj.name), con)
             instance.private_data().disjunction_constraints_map[disj] = con
         con[len(con)] = expr >= 1
-        # print(f"Added a cut: {str(expr >= 1)}\n=========================")
 
     def _near_match(self, d1, d2):
         for k, v in d1.items():
@@ -192,14 +199,16 @@ class ReversePolarEnumerationCuts(Transformation):
         idx_to_var = {0: None}
         var_to_idx = ComponentMap()
         coef = {}  # coef[(k, t)] = d_k^t
-        # These should have fast lookup, but they also need to have
-        # stable iteration order for testing and consistency, so I will
-        # use a dict to None instead of a set or list
+        # An insertion-ordered set type is desired here to enable fast
+        # membership checks but maintain stable iteration order for
+        # determinism and testing. Python does not provide this type, so
+        # I will use the keys of a dictionary for the same effect
+        # (rather than a list or set).
         Jm = {0: None}  # {k | \forall t d_k^t < 0} \cup {0}
         Jp = {}  # {k | \exists t d_k^t > 0}
         disjunct_idx = 1
 
-        # Preprocess
+        # Preprocessing
         visitor = LinearRepnVisitor(
             {}, var_recorder=OrderedVarRecorder({}, {}, SortComponents.deterministic)
         )
@@ -211,11 +220,10 @@ class ReversePolarEnumerationCuts(Transformation):
                     f"Disjunction transformed by {self.transformation_name} "
                     "must not have a nonlinear constraint."
                 )
-            # standardize form to dx >= d0, d0 = 1
-            # NOTE: We are assuming the RHS is all > 0 (for >= constraints);
-            # this will need to be handled before passing to this transformation.
+            # Standardize form to dx >= d0, d0 = 1. This transformation
+            # errors if we cannot do this.
 
-            # note: repn.multiplier is always 1 when obtained from LinearRepnVisitor
+            # NOTE: repn.multiplier is always 1 when obtained from LinearRepnVisitor
             multiplier = 1
             if con.ub is not None:
                 if con.lb is not None:
@@ -234,15 +242,14 @@ class ReversePolarEnumerationCuts(Transformation):
                 )
             multiplier /= lb
 
-            for v, c in repn.linear.items():
-                # here v is the var id
+            for vid, c in repn.linear.items():
                 c = c * multiplier
-                if v not in var_to_idx:
+                if vid not in var_to_idx:
                     idx = len(idx_to_var)
-                    idx_to_var[idx] = v
-                    var_to_idx[v] = idx
+                    idx_to_var[idx] = vid
+                    var_to_idx[vid] = idx
                 else:
-                    idx = var_to_idx[v]
+                    idx = var_to_idx[vid]
 
                 if c > 0:
                     Jp[idx] = None
@@ -250,7 +257,7 @@ class ReversePolarEnumerationCuts(Transformation):
                 # NOTE: a variable can be neither Jp nor Jm at this
                 # stage, but this will put such vars in Jm since we
                 # aren't catching zero coefficients. We handle this
-                # below
+                # below.
                 elif c < 0:
                     if idx not in Jp:
                         Jm[idx] = None
@@ -259,8 +266,9 @@ class ReversePolarEnumerationCuts(Transformation):
 
             disjunct_idx += 1
 
-        # Keep these sorted. Only Jp could fail to be here (since items
-        # can be added late if they were initially in Jm).
+        # Keep these sorted for consistency. Only Jp could fail to be
+        # here (since items can be added late if they were initially in
+        # Jm).
         Jp = dict(sorted(Jp.items()))
 
         # Fill in default entries. Eliminate this later to save effort when sparse
@@ -275,9 +283,8 @@ class ReversePolarEnumerationCuts(Transformation):
                         # is never necessary to include it on a
                         # generated cut.
 
-                        # TODO: This _is_ the only way zero coefficients
-                        # can arise (ie, they never show up in the
-                        # repn), right?
+                        # NOTE: Here we rely on the fact that zero
+                        # coefficients never show up in the repn.
                         Jm.pop(j, None)
         # Preprocessing (sparse positive intersections lemma from
         # Connor): Recreate the disjunction to have one disjunct for
@@ -305,10 +312,8 @@ class ReversePolarEnumerationCuts(Transformation):
                     * coef_new[j, j]
                 )
         coef = coef_new
-        # debug_vars(Jp, Jm, idx_to_var, visitor.var_map)
 
         # First: NEEC cut
-        # TODO: remove use of logarithms throughout
         delta = {}
         for j in Jp:
             delta[j] = log(coef[j, j])
@@ -319,8 +324,6 @@ class ReversePolarEnumerationCuts(Transformation):
             self._add_cut(
                 instance, xf_block, delta, disj, idx_to_var, visitor.var_map, Jp, Jm
             )
-        # breakpoint()
-        # print("=====================")
         added_cuts = 1
         if num_cuts == 1:
             return
@@ -328,14 +331,12 @@ class ReversePolarEnumerationCuts(Transformation):
         cost = {}
         for j in Jp:
             for k in Jm:
-                # print(f"here coef[{k}, {j}]={coef[k,j]}, coef[{j}, {j}]={coef[j,j]}")
                 cost[j, k] = log(abs(coef[k, j]) / coef[j, j])
-                # print(f"cost[{j}, {k}]={cost[j, k]}")
 
         # State machine: perform breadth-first search on D^# by using
         # the properties of the auxiliary graph G_dstar at each vertex
-        # dstar in D^# to find vertices adjacent to dstar, checking each
-        # against used_list in case they are not new.
+        # dstar in D^# to find (some) vertices adjacent to dstar,
+        # checking each against used_list in case they are not new.
         vertex_queue = [delta]
         used_list = [delta]
         # indexes into Jm. Start at sentinel value
@@ -376,9 +377,9 @@ class ReversePolarEnumerationCuts(Transformation):
                 for k in Jm:
                     if k in X:
                         for j in G_dstar.neighbors(k):
-                            # these are in Jp only
+                            # Forcing rule 1
+                            # These are in Jp only
                             X.append(j)
-                            # print("did forcing rule 1")
                 # Going forward we often need access to G_dstar[N_0 \ X]
                 G_working = G_dstar.copy()
                 G_working.remove_nodes_from(X)
@@ -386,10 +387,10 @@ class ReversePolarEnumerationCuts(Transformation):
                     if k not in X and k not in Xbar:
                         for j in G_dstar.neighbors(k):
                             if j in X and not nx.has_path(G_working, k, 0):
+                                # Forcing rule 2
                                 X.append(k)
                                 if k in G_working.nodes:
                                     G_working.remove_node(k)
-                                # print("did forcing rule 2")
                                 break
                 for j in Jp:
                     if j in X:
@@ -398,23 +399,17 @@ class ReversePolarEnumerationCuts(Transformation):
                             # these are in Jm only
                             if k not in X and k not in Xbar:
                                 if nx.has_path(G_working, k, 0):
-                                    # print(
-                                    #     f"had path to 0; double branch for {k=}"
-                                    # )
                                     cuts_queue.append((X, Xbar + [k]))
                                     cuts_queue.append((X + [k], Xbar))
                                 else:
-                                    # print(
-                                    #     f"no path to 0; single branch for {k=}"
-                                    # )
                                     cuts_queue.append((X + [k], Xbar))
                                 done = True
                                 break
                         if done:
-                            # we will see the other neighbors on
+                            # We will see the other neighbors on
                             # subsequent iterations
                             continue  # cuts_queue is still populated
-                # from here on any remaining elements of Jp and Jm
+                # From here on any remaining elements of Jp and Jm
                 # are treated as part of Xbar
                 if self._validate_cut(X, G_dstar, G_working, Jp, Jm):
                     # perform mip cut
@@ -426,7 +421,6 @@ class ReversePolarEnumerationCuts(Transformation):
                             if k in X and j not in X
                         ]
                     )
-                    # print(f"Calculated lambda*={lstar}")
                     d_candidate = {
                         k: (v + lstar if k in X else v) for k, v in dstar.items()
                     }
@@ -435,7 +429,6 @@ class ReversePolarEnumerationCuts(Transformation):
                     for d in used_list:
                         if self._near_match(d_candidate, d):
                             # near match to a vertex already used: do not add cut
-                            # print("was near match")
                             done = True
                             break
                     if done:
@@ -455,32 +448,29 @@ class ReversePolarEnumerationCuts(Transformation):
                             Jm,
                         )
                     if added_cuts == num_cuts:
-                        # early termination
+                        # early termination when requesting just a few
                         return
-                # depending on whether we used up cuts_queue, either get
+                # Depending on whether we used up cuts_queue, either get
                 # a new initial cut or continue processing
                 continue
                     
             
     def _validate_cut(self, cut, G_dstar, G_Xbar, Jp, Jm):
-        # print(f"validating cut {cut}")
+        # Verify that the found cut meets the requirements from the paper.
         G_X = G_dstar.copy()
         G_X.remove_nodes_from(G_Xbar.nodes)
         # (1) and (3) are known to be able to fail
         # (3) X intersects Jm and Xbar intersects Jp
         if set(Jm).isdisjoint(set(cut)) or set(Jp).isdisjoint(set(G_Xbar.nodes)):
-            # print("failed: X disjoint from Jm or Xbar disjoint from Jp")
             return False
         # (1) X and Xbar induce connected subgraphs of G_dstar
         if not nx.is_connected(G_Xbar) or not nx.is_connected(G_X):
-            # print("failed: G[X] or G[Xbar] not connected")
             return False
 
         # (2) No directed edges run from X to Xbar
         # This is probably not a possible failure case, but let's check just in case.
         for src, dst in G_dstar.edges:
             if src in cut and src in Jm and dst not in cut and dst in Jp:
-                # print("failed: there was an edge of G going from X to Xbar")
                 return False
         return True
 
