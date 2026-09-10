@@ -8,7 +8,7 @@
 # ____________________________________________________________________________________
 
 import logging
-import itertools
+from collections import defaultdict
 from pyomo.core.base import Transformation, TransformationFactory, NonNegativeIntegers
 from pyomo.core.base.component import ActiveComponent
 from pyomo.core.base.block import SubclassOf
@@ -18,7 +18,6 @@ from pyomo.common.autoslots import AutoSlots
 from pyomo.common.collections import ComponentMap, ComponentSet
 from pyomo.common.config import ConfigDict, ConfigValue
 from pyomo.common.modeling import unique_component_name
-from pyomo.common.enums import Enum
 from pyomo.core import Block, Constraint
 from pyomo.gdp import Disjunct, Disjunction, GDP_Error
 from pyomo.gdp.util import get_gdp_tree
@@ -30,6 +29,9 @@ from pyomo.common.dependencies import networkx as nx, networkx_available
 
 logger = logging.getLogger(__name__)
 EPS = 1e-6
+# Hashable object representing the dummy x0 variable that is not None,
+# since None cannot be used as a networkx node
+_x0 = object()
 
 
 class _ReversePolarEnumerationCutsData(AutoSlots.Mixin):
@@ -49,9 +51,7 @@ Block.register_private_data_initializer(_ReversePolarEnumerationCutsData)
     "forthcoming]. A simple disjunction is one in which each disjunct "
     "contains only exactly one linear inequality on "
     "nonnegative-constrained variables, which is outwards facing in the "
-    "sense that it can be rewritten in the form d . x >= 1."
-
-,
+    "sense that it can be rewritten in the form d . x >= 1.",
 )
 class ReversePolarEnumerationCuts(Transformation):
     """Add cuts to a GDP with 'simple disjunctions', according to the
@@ -113,8 +113,10 @@ class ReversePolarEnumerationCuts(Transformation):
 
     def _apply_to(self, instance, **kwds):
         if not networkx_available:
-            raise GDP_Error("Networkx is required for this transformation, but it could "
-                            "not be imported.")
+            raise GDP_Error(
+                "Networkx is required for this transformation, but it could "
+                "not be imported."
+            )
         if instance.ctype not in (Block, Disjunct):
             raise GDP_Error(
                 "Transformation called on %s of type %s. 'instance'"
@@ -141,8 +143,10 @@ class ReversePolarEnumerationCuts(Transformation):
 
     def _validate_disjunction(self, disj, tree):
         if tree.root_disjunct(disj) is not None:
-            raise GDP_Error("Nested disjunctions are not supported for "
-                            f"{self.transformation_name}")
+            raise GDP_Error(
+                "Nested disjunctions are not supported for "
+                f"{self.transformation_name}"
+            )
         for b in tree.children(disj):
             found = False
             for c in b.component_data_objects(SubclassOf(ActiveComponent)):
@@ -163,11 +167,11 @@ class ReversePolarEnumerationCuts(Transformation):
                     f"{self.transformation_name} - no cuts are possible."
                 )
 
-    def _add_cut(self, instance, xf_block, delta, disj, idx_to_var, var_map, Jp, Jm):
+    def _add_cut(self, instance, xf_block, delta, disj, var_map, Jp, Jm):
         expr = 0
         for k, v in delta.items():
-            if k != 0:
-                var = var_map[idx_to_var[k]]
+            if k != _x0:
+                var = var_map[k]
                 if k in Jp:
                     alpha = exp(delta[k])
                 elif k in Jm:
@@ -193,19 +197,16 @@ class ReversePolarEnumerationCuts(Transformation):
             return
         num_skip = self._config.num_skip
 
-        # Bijectively label the vars as I find them since I need a dummy
-        # variable zero. (x_0 is always treated as 1). This can
-        # probably be eliminated later
-        idx_to_var = {0: None}
-        var_to_idx = ComponentMap()
-        coef = {}  # coef[(k, t)] = d_k^t
+        coef = defaultdict(lambda: 0)  # coef[(k, t)] = d_k^t
+
         # An insertion-ordered set type is desired here to enable fast
         # membership checks but maintain stable iteration order for
         # determinism and testing. Python does not provide this type, so
-        # I will use the keys of a dictionary for the same effect
-        # (rather than a list or set).
-        Jm = {0: None}  # {k | \forall t d_k^t < 0} \cup {0}
+        # I will use the keys of a dictionary for the same effect.
+        Jm = {_x0: None}  # {k | \forall t d_k^t < 0} \cup {0}
         Jp = {}  # {k | \exists t d_k^t > 0}
+        found_order = {}  # for maintaining Jp and Jm in the same order we iterated
+        found_idx = 1
         disjunct_idx = 1
 
         # Preprocessing
@@ -243,49 +244,41 @@ class ReversePolarEnumerationCuts(Transformation):
             multiplier /= lb
 
             for vid, c in repn.linear.items():
+                if vid not in found_order:
+                    found_order[vid] = found_idx
+                    found_idx += 1
                 c = c * multiplier
-                if vid not in var_to_idx:
-                    idx = len(idx_to_var)
-                    idx_to_var[idx] = vid
-                    var_to_idx[vid] = idx
-                else:
-                    idx = var_to_idx[vid]
-
                 if c > 0:
-                    Jp[idx] = None
-                    Jm.pop(idx, None)
+                    Jp[vid] = None
+                    Jm.pop(vid, None)
                 # NOTE: a variable can be neither Jp nor Jm at this
                 # stage, but this will put such vars in Jm since we
                 # aren't catching zero coefficients. We handle this
                 # below.
                 elif c < 0:
-                    if idx not in Jp:
-                        Jm[idx] = None
+                    if vid not in Jp:
+                        Jm[vid] = None
 
-                coef[(idx, disjunct_idx)] = c
+                coef[(vid, disjunct_idx)] = c
 
             disjunct_idx += 1
 
         # Keep these sorted for consistency. Only Jp could fail to be
-        # here (since items can be added late if they were initially in
-        # Jm).
-        Jp = dict(sorted(Jp.items()))
+        # here (since items can be added late if they were initially
+        # placed in Jm).
+        Jp = dict(sorted(Jp.items(), key=lambda x: found_order[x[0]]))
 
-        # Fill in default entries. Eliminate this later to save effort when sparse
         for t in range(1, disjunct_idx):
-            coef[0, t] = 1
-            for j in range(1, len(idx_to_var)):
-                if (j, t) not in coef:
-                    coef[j, t] = 0
-                    if j in Jm:
-                        # In this case, we effectively delete this
-                        # variable completely from the disjunction. It
-                        # is never necessary to include it on a
-                        # generated cut.
+            coef[_x0, t] = 1
+            for j in [j for j in Jm if (j, t) not in coef]:
+                # In this case, we effectively delete this variable
+                # completely from the disjunction. It is never necessary
+                # to include it on a generated cut.
 
-                        # NOTE: Here we rely on the fact that zero
-                        # coefficients never show up in the repn.
-                        Jm.pop(j, None)
+                # NOTE: Here we rely on the fact that zero coefficients
+                # never show up in the repn.
+                Jm.pop(j, None)
+
         # Preprocessing (sparse positive intersections lemma from
         # Connor): Recreate the disjunction to have one disjunct for
         # each Jp variable, performing various alterations to the
@@ -293,13 +286,10 @@ class ReversePolarEnumerationCuts(Transformation):
         # a square diagonal matrix of size |Jp|x|Jp| with positive
         # diagonal values, and below that a block of all negative values
         # corresponding to variables in Jm.
-        coef_new = {}
+        coef_new = defaultdict(lambda: 0)
         for j in Jp:
-            for k in Jp:
-                if j == k:
-                    coef_new[j, j] = max([coef[j, t] for t in range(1, disjunct_idx)])
-                else:
-                    coef_new[k, j] = 0
+            # leave to zero other coef_new[k, j] for both indices in Jp
+            coef_new[j, j] = max([coef[j, t] for t in range(1, disjunct_idx)])
             for k in Jm:
                 coef_new[k, j] = (
                     -min(
@@ -321,9 +311,7 @@ class ReversePolarEnumerationCuts(Transformation):
             delta[k] = log(min([abs(coef[k, j]) for j in Jp]))
 
         if not num_skip:
-            self._add_cut(
-                instance, xf_block, delta, disj, idx_to_var, visitor.var_map, Jp, Jm
-            )
+            self._add_cut(instance, xf_block, delta, disj, visitor.var_map, Jp, Jm)
         added_cuts = 1
         if num_cuts == 1:
             return
@@ -386,7 +374,7 @@ class ReversePolarEnumerationCuts(Transformation):
                 for k in Jm:
                     if k not in X and k not in Xbar:
                         for j in G_dstar.neighbors(k):
-                            if j in X and not nx.has_path(G_working, k, 0):
+                            if j in X and not nx.has_path(G_working, k, _x0):
                                 # Forcing rule 2
                                 X.append(k)
                                 if k in G_working.nodes:
@@ -398,7 +386,7 @@ class ReversePolarEnumerationCuts(Transformation):
                         for k in G_dstar.neighbors(j):
                             # these are in Jm only
                             if k not in X and k not in Xbar:
-                                if nx.has_path(G_working, k, 0):
+                                if nx.has_path(G_working, k, _x0):
                                     cuts_queue.append((X, Xbar + [k]))
                                     cuts_queue.append((X + [k], Xbar))
                                 else:
@@ -442,7 +430,6 @@ class ReversePolarEnumerationCuts(Transformation):
                             xf_block,
                             d_candidate,
                             disj,
-                            idx_to_var,
                             visitor.var_map,
                             Jp,
                             Jm,
@@ -453,8 +440,7 @@ class ReversePolarEnumerationCuts(Transformation):
                 # Depending on whether we used up cuts_queue, either get
                 # a new initial cut or continue processing
                 continue
-                    
-            
+
     def _validate_cut(self, cut, G_dstar, G_Xbar, Jp, Jm):
         # Verify that the found cut meets the requirements from the paper.
         G_X = G_dstar.copy()
@@ -473,17 +459,6 @@ class ReversePolarEnumerationCuts(Transformation):
             if src in cut and src in Jm and dst not in cut and dst in Jp:
                 return False
         return True
-
-
-def debug_vars(Jp, Jm, idx_to_var, var_map):
-    print()
-    for j in Jp:
-        print(f"Index {j} (Jp) corresponds to {var_map[idx_to_var[j]].name}")
-    for k in Jm:
-        if k == 0:
-            print("Index 0 (Jm) is the dummy variable")
-        else:
-            print(f"Index {k} (Jm) corresponds to {var_map[idx_to_var[k]].name}")
 
 
 def get_constraint(transformed_block, disjunction):
