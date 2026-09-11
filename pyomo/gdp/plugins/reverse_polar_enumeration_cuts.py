@@ -15,7 +15,7 @@ from pyomo.core.base.block import SubclassOf
 from pyomo.core.util import target_list
 from pyomo.core.base.enums import SortComponents
 from pyomo.common.autoslots import AutoSlots
-from pyomo.common.collections import ComponentMap, ComponentSet
+from pyomo.common.collections import ComponentMap
 from pyomo.common.config import ConfigDict, ConfigValue
 from pyomo.common.modeling import unique_component_name
 from pyomo.core import Block, Constraint
@@ -297,12 +297,12 @@ class ReversePolarEnumerationCuts(Transformation):
         # a square diagonal matrix of size |Jp|x|Jp| with positive
         # diagonal values, and below that a block of all negative values
         # corresponding to variables in Jm.
-        coef_new = defaultdict(lambda: 0)
+        coef_preproc = defaultdict(lambda: 0)
         for j in Jp:
-            # leave to zero other coef_new[k, j] for both indices in Jp
-            coef_new[j, j] = max([coef[j, t] for t in range(1, disjunct_idx)])
+            # leave at zero other coef_preproc[k, j] for both indices in Jp
+            coef_preproc[j, j] = max([coef[j, t] for t in range(1, disjunct_idx)])
             for k in Jm:
-                coef_new[k, j] = (
+                coef_preproc[k, j] = (
                     -min(
                         [
                             abs(coef[k, t]) / coef[j, t]
@@ -310,9 +310,9 @@ class ReversePolarEnumerationCuts(Transformation):
                             if coef[j, t] > 0
                         ]
                     )
-                    * coef_new[j, j]
+                    * coef_preproc[j, j]
                 )
-        coef = coef_new
+        coef = coef_preproc
 
         # First: NEEC cut
         delta = {}
@@ -341,10 +341,10 @@ class ReversePolarEnumerationCuts(Transformation):
         # indexes into Jm. Start at sentinel value
         k0 = len(Jm)
         # tuples of lists: (X, Xbar)
-        cuts_queue = []
+        cuts_stack = []
 
         while True:
-            if not cuts_queue:
+            if not cuts_stack:
                 if k0 == len(Jm):
                     # get a new vertex and reset k0
                     if not vertex_queue:
@@ -366,31 +366,47 @@ class ReversePolarEnumerationCuts(Transformation):
                     for i in range(k0):
                         Xbar.append(next(it))
                     X = [next(it)]
-                    cuts_queue.append((X, Xbar))
+                    cuts_stack.append((X, Xbar))
                     k0 += 1
                     continue
             else:
                 # there are candidate graph cuts in the queue; process them
-                X, Xbar = cuts_queue.pop(-1)
-                # Forcing rules that necessarily put certain nodes in X
-                for k in Jm:
-                    if k in X:
-                        for j in G_dstar.neighbors(k):
-                            # Forcing rule 1
-                            # These are in Jp only
-                            X.append(j)
+                X, Xbar = cuts_stack.pop(-1)
+
                 # Going forward we often need access to G_dstar[N_0 \ X]
                 G_working = G_dstar.copy()
                 G_working.remove_nodes_from(X)
-                for k in Jm:
-                    if k not in X and k not in Xbar:
-                        for j in G_dstar.neighbors(k):
-                            if j in X and not nx.has_path(G_working, k, _x0):
-                                # Forcing rule 2
-                                X.append(k)
-                                if k in G_working.nodes:
-                                    G_working.remove_node(k)
-                                break
+
+                # Forcing rules that necessarily put certain nodes in
+                # X. Iterate these until no more work is done. The loop
+                # could be removed and this done only once, which may or
+                # may not be faster, but the output might require more
+                # filtering, in particular for property (2).
+                did_forcing = True
+                while did_forcing:
+                    did_forcing = False
+                    # Forcing rule 1
+                    for k in Jm:
+                        if k in X:
+                            for j in G_dstar.neighbors(k):
+                                if j not in X:
+                                    # These are in Jp only
+                                    X.append(j)
+                                    did_forcing = True
+                                    if j in G_working.nodes:
+                                        G_working.remove_node(j)
+                    # Forcing rule 2
+                    for k in Jm:
+                        if k not in X and k not in Xbar:
+                            for j in G_dstar.neighbors(k):
+                                if j in X and not nx.has_path(G_working, k, _x0):
+                                    # Forcing rule 2
+                                    X.append(k)
+                                    did_forcing = True
+                                    if k in G_working.nodes:
+                                        G_working.remove_node(k)
+                                    break
+
                 for j in Jp:
                     if j in X:
                         done = False
@@ -398,10 +414,10 @@ class ReversePolarEnumerationCuts(Transformation):
                             # these are in Jm only
                             if k not in X and k not in Xbar:
                                 if nx.has_path(G_working, k, _x0):
-                                    cuts_queue.append((X, Xbar + [k]))
-                                    cuts_queue.append((X + [k], Xbar))
+                                    cuts_stack.append((X, Xbar + [k]))
+                                    cuts_stack.append((X + [k], Xbar))
                                 else:
-                                    cuts_queue.append((X + [k], Xbar))
+                                    cuts_stack.append((X + [k], Xbar))
                                 done = True
                                 break
                         if done:
@@ -423,11 +439,11 @@ class ReversePolarEnumerationCuts(Transformation):
                     d_candidate = {
                         k: (v + lstar if k in X else v) for k, v in dstar.items()
                     }
-                    # floating point...
+                    # check if new, up to floating-point rounding
+                    # error. If not, do not add cut
                     done = False
                     for d in used_list:
                         if self._near_match(d_candidate, d):
-                            # near match to a vertex already used: do not add cut
                             done = True
                             break
                     if done:
@@ -456,7 +472,7 @@ class ReversePolarEnumerationCuts(Transformation):
         # Verify that the found cut meets the requirements from the paper.
         G_X = G_dstar.copy()
         G_X.remove_nodes_from(G_Xbar.nodes)
-        # (1) and (3) are known to be able to fail
+        # We know that (1) and (3) can fail with the algorithm as written
         # (3) X intersects Jm and Xbar intersects Jp
         if set(Jm).isdisjoint(set(cut)) or set(Jp).isdisjoint(set(G_Xbar.nodes)):
             return False
@@ -464,11 +480,14 @@ class ReversePolarEnumerationCuts(Transformation):
         if not nx.is_connected(G_Xbar) or not nx.is_connected(G_X):
             return False
 
-        # (2) No directed edges run from X to Xbar
-        # This is probably not a possible failure case, but let's check just in case.
-        for src, dst in G_dstar.edges:
-            if src in cut and src in Jm and dst not in cut and dst in Jp:
-                return False
+        # (2) No directed (Jm->Jp) edges run from X to Xbar
+
+        # This should be guaranteed by forcing rule 1, given that we
+        # iterate the forcing rules until they cannot be performed any
+        # more, and we don't add any Jm variables to X later in the
+        # iteration. Should this logic fail somehow (eg if we didn't
+        # have the loop around the forcing rules), we would need to
+        # check this here too.
         return True
 
 
