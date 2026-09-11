@@ -71,6 +71,7 @@ ALMOST_ONE = 1.00000000000001
 class TestReversePolarEnumerationCuts(unittest.TestCase):
     @unittest.skipUnless(networkx_available, "Networkx is not available")
     def test_example(self):
+        # Example model and first cut from Connor's poster
         m = ConcreteModel()
         m.x1 = Var(bounds=(0, 20))
         m.x2 = Var(bounds=(0, 20))
@@ -95,11 +96,10 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
             5.0 * m.x1 + m.x4 + 4.0 * m.x3 - (5.0 / 3.0) * m.x2,
             places=8,
         )
-        # TODO: check more than the NEEC cut here
 
     @unittest.skipUnless(networkx_available, "Networkx is not available")
     def test_linearly_many_easy(self):
-        # Easier version: 4 variables, 3 cuts
+        # Easier version of below: 4 variables, 3 cuts
         # After preprocessing the disjunction should look exactly the same,
         # and the obtained cuts should be:
         # x1 + x2 - x3 - x4 >= 1
@@ -243,8 +243,31 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         self.assertEqual(1, cons[4].lower)
         self.assertIsNone(cons[4].upper)
 
-    # TODO:
-    # - test a big case for linearly many
+    @unittest.skipUnless(networkx_available, "Networkx is not available")
+    def test_linearly_many_hard(self):
+        # As before but with N a large(ish) number divisible by 4
+        m = ConcreteModel()
+        N = 40
+        m.idx = RangeSet(1, N)
+        m.x = Var(m.idx, bounds=(0, 20))
+        m.d1 = Disjunct()
+        m.d1.c = Constraint(
+            expr=sum(m.x[i] for i in range(1, round(N / 4) + 1))
+            - sum(m.x[i] for i in range(round(N / 2) + 1, N + 1))
+            >= 1
+        )
+        m.d2 = Disjunct()
+        m.d2.c = Constraint(
+            expr=sum(m.x[i] for i in range(round(N / 4) + 1, round(N / 2) + 1))
+            - sum(i * m.x[i] for i in range(round(N / 2) + 1, N + 1))
+            >= 1
+        )
+        m.d = Disjunction(expr=[m.d1, m.d2])
+
+        TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
+        cons = get_constraint(m, m.d)
+
+        self.assertEqual(N / 2 + 1, len(cons))
 
     @unittest.skipUnless(networkx_available, "Networkx is not available")
     def test_not_Jm_or_Jp(self):
@@ -266,7 +289,7 @@ class TestReversePolarEnumerationCuts(unittest.TestCase):
         TransformationFactory('gdp.reverse_polar_enumeration_cuts').apply_to(m)
 
     @unittest.skipUnless(networkx_available, "Networkx is not available")
-    def test_exponentially_many_easy(self):
+    def test_exponentially_many(self):
         # For this pattern, a disjunction on n variables with n/2
         # disjuncts leads to a total of 2^{n/2} - 1 cuts. Here we have
         # n=6 so there should be 7 cuts generated.
