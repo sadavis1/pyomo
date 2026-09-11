@@ -142,6 +142,7 @@ class ReversePolarEnumerationCuts(Transformation):
                 self._generate_cuts(instance, xf_block, t, tree)
 
     def _validate_disjunction(self, disj, tree):
+        # NOTE: some validation is deferred until we actually walk them
         if tree.root_disjunct(disj) is not None:
             raise GDP_Error(
                 "Nested disjunctions are not supported for "
@@ -245,6 +246,16 @@ class ReversePolarEnumerationCuts(Transformation):
 
             for vid, c in repn.linear.items():
                 if vid not in found_order:
+                    # First time we found a variable; error-check that
+                    # it's nonnegative constrained like we want. If the
+                    # bound is positive then we aren't being sharp but
+                    # the transformation is still valid.
+                    bounds = visitor.var_map[vid].bounds
+                    if bounds[0] is None or bounds[0] < 0:
+                        raise GDP_Error(
+                            f"Variables for {self.transformation_name} "
+                            "should have nonnegative lower bounds."
+                        )
                     found_order[vid] = found_idx
                     found_idx += 1
                 c = c * multiplier
@@ -279,7 +290,7 @@ class ReversePolarEnumerationCuts(Transformation):
                 # never show up in the repn.
                 Jm.pop(j, None)
 
-        # Preprocessing (sparse positive intersections lemma from
+        # Preprocessing ("sparse positive intersections" lemma from
         # Connor): Recreate the disjunction to have one disjunct for
         # each Jp variable, performing various alterations to the
         # coefficients. In the end d_k^t has a block form consisting of
@@ -328,13 +339,13 @@ class ReversePolarEnumerationCuts(Transformation):
         vertex_queue = [delta]
         used_list = [delta]
         # indexes into Jm. Start at sentinel value
-        k0 = len(Jm) - 1
+        k0 = len(Jm)
         # tuples of lists: (X, Xbar)
         cuts_queue = []
 
         while True:
             if not cuts_queue:
-                if k0 == len(Jm) - 1:
+                if k0 == len(Jm):
                     # get a new vertex and reset k0
                     if not vertex_queue:
                         return  # all cuts generated
@@ -346,17 +357,17 @@ class ReversePolarEnumerationCuts(Transformation):
                         for k in Jm:
                             if abs(dstar[k] - dstar[j] - cost[j, k]) < EPS:
                                 G_dstar.add_edge(k, j)
-                    k0 = 0
+                    k0 = 1
                     continue
                 else:
                     # start a new [set of] graph cuts
-                    k0 = k0 + 1  # skip 0
                     Xbar = []
                     it = iter(Jm)
                     for i in range(k0):
                         Xbar.append(next(it))
                     X = [next(it)]
                     cuts_queue.append((X, Xbar))
+                    k0 += 1
                     continue
             else:
                 # there are candidate graph cuts in the queue; process them
