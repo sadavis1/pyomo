@@ -21,6 +21,7 @@ from pyomo.contrib.piecewise.transform.nonlinear_to_pwl import (
     lineartree_available,
     sklearn_available,
 )
+from pyomo.contrib.piecewise.triangulations import Triangulation
 from pyomo.core.base.expression import _ExpressionData
 from pyomo.core.expr.compare import (
     assertExpressionsEqual,
@@ -595,6 +596,36 @@ class TestNonlinearToPWL_2D(unittest.TestCase):
         nonlinear = n_to_pwl.get_transformed_nonlinear_objectives(m)
         self.assertEqual(len(nonlinear), 0)
 
+    def test_triangulation_argument(self):
+        m = self.make_paraboloid_model()
+        n_to_pwl = TransformationFactory('contrib.piecewise.nonlinear_to_pwl')
+        n_to_pwl.apply_to(
+            m,
+            num_points=3,
+            domain_partitioning_method=DomainPartitioningMethod.UNIFORM_GRID,
+            triangulation=Triangulation.OrderedJ1
+        )
+
+        # check obj is transformed
+        self.assertFalse(m.obj.active)
+
+        pwlf = list(
+            m.component_data_objects(PiecewiseLinearFunction, descend_into=True)
+        )
+        self.assertEqual(len(pwlf), 1)
+        pwlf = pwlf[0]
+        # It claims to be a J1 triangulation
+        self.assertIs(pwlf.triangulation, Triangulation.OrderedJ1)
+
+        points = pwlf._points
+        simplices = pwlf._simplices
+        # we sampled a 3 by 3 grid:
+        self.assertEqual(len(points), 9)
+        # which means we get 8 simplices:
+        self.assertEquak(len(simplices), 8)
+
+        # TODO: test the simplices
+
 
 @unittest.skipUnless(lineartree_available, "lineartree not available")
 @unittest.skipUnless(sklearn_available, "sklearn not available")
@@ -672,11 +703,6 @@ class TestLinearTreeDomainPartitioning(unittest.TestCase):
 
         transformed_obj = n_to_pwl.get_transformed_component(m.obj)
         pwlf = transformed_obj.expr.expr.pw_linear_function
-
-        print(pwlf._simplices)
-        print(pwlf._points)
-        for f in pwlf._linear_functions:
-            print(f(m.x))
 
         # We end up with 8, which is just what happens, but it's not a terrible
         # approximation
