@@ -622,7 +622,7 @@ class TestNonlinearToPWL_2D(unittest.TestCase):
         # we sampled a 3 by 3 grid:
         self.assertEqual(len(points), 9)
         # which means we get 8 simplices:
-        self.assertEquak(len(simplices), 8)
+        self.assertEqual(len(simplices), 8)
 
         # TODO: test the simplices
 
