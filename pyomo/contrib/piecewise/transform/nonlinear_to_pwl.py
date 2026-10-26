@@ -204,8 +204,7 @@ def _get_pwl_function_approximation(func, config, bounds):
             )
         if n % 2 == 0:
             raise ValueError(f"Need odd number of points for {config.triangulation}")
-        for b in bounds:
-            b = (b[0], False)  # treat integer as continuous so the grid is even
+        bounds = [(b[0], False) for b in bounds]  # treat integer as continuous so the grid is even
     points = _partition_method_dispatcher[method](bounds, n, func, config)
 
     # Don't confuse PiecewiseLinearFunction constructor...
